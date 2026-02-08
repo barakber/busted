@@ -1,4 +1,4 @@
-use busted_types::NetworkEvent;
+use busted_types::{NetworkEvent, TlsDataEvent};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
@@ -26,6 +26,13 @@ pub struct ProcessedEvent {
     pub behavior: Option<crate::ml::BehaviorIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sni: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_details: Option<String>,
+    /// Raw decrypted TLS payload (lossy UTF-8)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_payload: Option<String>,
 }
 
 impl ProcessedEvent {
@@ -66,6 +73,52 @@ impl ProcessedEvent {
             #[cfg(feature = "ml")]
             behavior: None,
             sni: None,
+            tls_protocol: None,
+            tls_details: None,
+            tls_payload: None,
+        }
+    }
+
+    /// Create a ProcessedEvent from a TLS data capture event.
+    pub fn from_tls_data_event(
+        event: &TlsDataEvent,
+        protocol: Option<String>,
+        details: Option<String>,
+    ) -> Self {
+        let event_type = match event.event_type {
+            7 => "TLS_DATA_WRITE",
+            8 => "TLS_DATA_READ",
+            _ => "UNKNOWN",
+        };
+
+        let payload = String::from_utf8_lossy(event.payload_bytes()).to_string();
+
+        ProcessedEvent {
+            event_type: event_type.to_string(),
+            timestamp: format_timestamp(event.timestamp_ns),
+            pid: event.pid,
+            uid: 0,
+            process_name: event.process_name().to_string(),
+            src_ip: String::new(),
+            src_port: 0,
+            dst_ip: String::new(),
+            dst_port: 0,
+            bytes: event.payload_len as u64,
+            provider: protocol.clone(),
+            policy: None,
+            container_id: String::new(),
+            cgroup_id: 0,
+            request_rate: None,
+            session_bytes: None,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+            #[cfg(feature = "ml")]
+            behavior: None,
+            sni: None,
+            tls_protocol: protocol,
+            tls_details: details,
+            tls_payload: Some(payload),
         }
     }
 }

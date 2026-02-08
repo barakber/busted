@@ -36,6 +36,9 @@ pub struct BuildOptions {
     /// Build in release mode
     #[clap(long)]
     release: bool,
+    /// Comma-separated list of features to enable (e.g. tls,ml,k8s)
+    #[clap(long)]
+    features: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -43,6 +46,9 @@ pub struct RunOptions {
     /// Build in release mode
     #[clap(long)]
     release: bool,
+    /// Comma-separated list of features to enable (e.g. tls,ml,k8s)
+    #[clap(long)]
+    features: Option<String>,
     /// Arguments to pass to the agent
     #[clap(last = true)]
     run_args: Vec<String>,
@@ -65,14 +71,14 @@ fn try_main() -> Result<()> {
                 release: opts.release,
                 target: "bpfel-unknown-none".to_string(),
             })?;
-            build_userspace(opts.release)
+            build_userspace(opts.release, opts.features.as_deref())
         }
         Subcommand::Run(opts) => {
             build_ebpf(BuildEbpfOptions {
                 release: opts.release,
                 target: "bpfel-unknown-none".to_string(),
             })?;
-            build_userspace(opts.release)?;
+            build_userspace(opts.release, opts.features.as_deref())?;
             run(opts)
         }
     }
@@ -107,11 +113,18 @@ fn build_ebpf(opts: BuildEbpfOptions) -> Result<()> {
     Ok(())
 }
 
-fn build_userspace(release: bool) -> Result<()> {
+fn build_userspace(release: bool, features: Option<&str>) -> Result<()> {
     let mut args = vec!["build", "--package", "busted-agent"];
 
     if release {
         args.push("--release");
+    }
+
+    let features_owned;
+    if let Some(f) = features {
+        args.push("--features");
+        features_owned = f.to_string();
+        args.push(&features_owned);
     }
 
     let status = Command::new("cargo")

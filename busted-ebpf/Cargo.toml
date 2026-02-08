@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 aya-ebpf.workspace = true
+aya-ebpf-bindings = "0.1.2"
 aya-log-ebpf.workspace = true
 busted-types = { path = "../busted-types" }
 

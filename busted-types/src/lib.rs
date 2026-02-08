@@ -25,6 +25,10 @@ pub enum EventType {
     DnsQuery = 5,
     /// TLS handshake (SNI extraction)
     TlsHandshake = 6,
+    /// TLS plaintext data write (SSL_write capture)
+    TlsDataWrite = 7,
+    /// TLS plaintext data read (SSL_read capture)
+    TlsDataRead = 8,
 }
 
 /// Network protocol family
@@ -52,6 +56,9 @@ impl IpAddress {
 
 /// Maximum length for SNI hostnames
 pub const SNI_MAX_LEN: usize = 128;
+
+/// Maximum payload bytes captured per TLS read/write
+pub const TLS_PAYLOAD_MAX: usize = 512;
 
 /// TLS handshake event captured by eBPF uprobe on SSL_ctrl
 #[repr(C)]
@@ -82,6 +89,72 @@ impl TlsHandshakeEvent {
             timestamp_ns: 0,
             comm: [0; TASK_COMM_LEN],
             sni: [0; SNI_MAX_LEN],
+        }
+    }
+}
+
+/// Composite key for TLS connection verdict map: (PID, SSL pointer)
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TlsConnKey {
+    pub pid: u32,
+    pub _pad: u32,
+    pub ssl_ptr: u64,
+}
+
+impl TlsConnKey {
+    pub const fn new() -> Self {
+        TlsConnKey {
+            pid: 0,
+            _pad: 0,
+            ssl_ptr: 0,
+        }
+    }
+}
+
+/// TLS plaintext data captured by eBPF uprobes on SSL_write/SSL_read
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TlsDataEvent {
+    /// Event type: 7=write, 8=read (at byte offset 0 for dispatch)
+    pub event_type: u8,
+    /// Direction: 0=write, 1=read
+    pub direction: u8,
+    /// Actual bytes captured (may be less than TLS_PAYLOAD_MAX)
+    pub payload_len: u16,
+    /// Process ID
+    pub pid: u32,
+    /// Thread ID
+    pub tid: u32,
+    pub _pad: u32,
+    /// SSL struct pointer — unique connection identifier
+    pub ssl_ptr: u64,
+    /// Timestamp (nanoseconds since boot)
+    pub timestamp_ns: u64,
+    /// Process/command name
+    pub comm: [u8; TASK_COMM_LEN],
+    /// 1 if this is the first data on this connection
+    pub is_first_chunk: u8,
+    pub _pad2: [u8; 3],
+    /// Captured plaintext payload
+    pub payload: [u8; TLS_PAYLOAD_MAX],
+}
+
+impl TlsDataEvent {
+    pub const fn new() -> Self {
+        TlsDataEvent {
+            event_type: 7,
+            direction: 0,
+            payload_len: 0,
+            pid: 0,
+            tid: 0,
+            _pad: 0,
+            ssl_ptr: 0,
+            timestamp_ns: 0,
+            comm: [0; TASK_COMM_LEN],
+            is_first_chunk: 0,
+            _pad2: [0; 3],
+            payload: [0; TLS_PAYLOAD_MAX],
         }
     }
 }
@@ -219,6 +292,8 @@ mod pod_impls {
     unsafe impl aya::Pod for NetworkEvent {}
     unsafe impl aya::Pod for AgentIdentity {}
     unsafe impl aya::Pod for TlsHandshakeEvent {}
+    unsafe impl aya::Pod for TlsConnKey {}
+    unsafe impl aya::Pod for TlsDataEvent {}
 }
 
 #[cfg(feature = "user")]
@@ -231,6 +306,20 @@ pub mod userspace {
         pub fn sni_str(&self) -> &str {
             let len = self.sni.iter().position(|&c| c == 0).unwrap_or(self.sni.len());
             std::str::from_utf8(&self.sni[..len]).unwrap_or("<invalid>")
+        }
+
+        /// Get process name as string
+        pub fn process_name(&self) -> &str {
+            let len = self.comm.iter().position(|&c| c == 0).unwrap_or(self.comm.len());
+            std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
+        }
+    }
+
+    impl TlsDataEvent {
+        /// Get the captured payload bytes (up to payload_len)
+        pub fn payload_bytes(&self) -> &[u8] {
+            let len = (self.payload_len as usize).min(crate::TLS_PAYLOAD_MAX);
+            &self.payload[..len]
         }
 
         /// Get process name as string

@@ -32,7 +32,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.filter_event_type, String::new(), "All");
-                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED", "DNS_QUERY"] {
+                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED", "DNS_QUERY", "TLS_DATA_WRITE", "TLS_DATA_READ"] {
                     ui.selectable_value(
                         &mut app.filter_event_type,
                         t.to_string(),
@@ -92,6 +92,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
         .column(Column::auto().at_least(70.0)) // Bytes
         .column(Column::auto().at_least(70.0)) // Provider
         .column(Column::auto().at_least(120.0)) // SNI
+        .column(Column::auto().at_least(100.0)) // TLS Details
         .column(Column::auto().at_least(80.0)) // Container
         .min_scrolled_height(0.0);
 
@@ -112,6 +113,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             header.col(|ui| { ui.strong("Bytes"); });
             header.col(|ui| { ui.strong("Provider"); });
             header.col(|ui| { ui.strong("SNI"); });
+            header.col(|ui| { ui.strong("TLS Details"); });
             header.col(|ui| { ui.strong("Container"); });
         })
         .body(|body| {
@@ -130,6 +132,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
                 });
                 row.col(|ui| {
                     ui.label(event.sni.as_deref().unwrap_or("-"));
+                });
+                row.col(|ui| {
+                    ui.label(event.tls_details.as_deref().unwrap_or("-"));
                 });
                 row.col(|ui| {
                     let cid = if event.container_id.is_empty() { "-" } else { &event.container_id };

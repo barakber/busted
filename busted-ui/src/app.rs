@@ -40,6 +40,12 @@ pub struct ProcessedEvent {
     pub cluster_id: Option<i32>,
     #[serde(default)]
     pub sni: Option<String>,
+    #[serde(default)]
+    pub tls_protocol: Option<String>,
+    #[serde(default)]
+    pub tls_details: Option<String>,
+    #[serde(default)]
+    pub tls_payload: Option<String>,
 }
 
 #[derive(Clone, Debug)]

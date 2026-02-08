@@ -20,7 +20,7 @@ use aya::programs::UProbe;
 use aya_log::EbpfLogger;
 use busted_types::{AgentIdentity, NetworkEvent};
 #[cfg(feature = "tls")]
-use busted_types::TlsHandshakeEvent;
+use busted_types::{TlsConnKey, TlsDataEvent, TlsHandshakeEvent};
 use clap::Parser;
 use events::ProcessedEvent;
 use log::{debug, info, warn};
@@ -278,6 +278,12 @@ struct EventOutput {
     cluster_id: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sni: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls_protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls_details: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tls_payload: Option<String>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -335,6 +341,9 @@ impl From<&ProcessedEvent> for EventOutput {
                 { None }
             },
             sni: e.sni.clone(),
+            tls_protocol: e.tls_protocol.clone(),
+            tls_details: e.tls_details.clone(),
+            tls_payload: e.tls_payload.clone(),
         }
     }
 }
@@ -489,7 +498,22 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                     }
                 }
                 _ => {
-                    if let Some(ref provider) = event.provider {
+                    // TLS data events: show decrypted payload
+                    if event.event_type.starts_with("TLS_DATA_") {
+                        if let Some(ref payload) = event.tls_payload {
+                            info!(
+                                "[{}] {} | PID: {} ({}) | {} bytes | {}{}\n---\n{}\n---",
+                                event.event_type,
+                                event.timestamp,
+                                event.pid,
+                                event.process_name,
+                                event.bytes,
+                                event.tls_protocol.as_deref().unwrap_or(""),
+                                event.tls_details.as_ref().map(|d| format!(" ({})", d)).unwrap_or_default(),
+                                payload,
+                            );
+                        }
+                    } else if let Some(ref provider) = event.provider {
                         info!(
                             "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}{}",
                             event.event_type,
@@ -648,18 +672,51 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Attach TLS SNI uprobe (behind tls feature flag)
+    // Attach TLS uprobes (behind tls feature flag)
     #[cfg(feature = "tls")]
     {
         if let Some(libssl_path) = tls::detect_libssl_path() {
+            // SNI extraction (existing)
             let prog: &mut UProbe = bpf.program_mut("ssl_ctrl_sni").unwrap().try_into()?;
             prog.load()?;
             match prog.attach(Some("SSL_ctrl"), 0, &libssl_path, None) {
                 Ok(_) => info!("TLS uprobe attached to SSL_ctrl at {}", libssl_path.display()),
                 Err(e) => warn!("Failed to attach TLS uprobe: {}", e),
             }
+
+            // SSL_write plaintext capture
+            let prog: &mut UProbe = bpf.program_mut("ssl_write_entry").unwrap().try_into()?;
+            prog.load()?;
+            match prog.attach(Some("SSL_write"), 0, &libssl_path, None) {
+                Ok(_) => info!("TLS uprobe attached to SSL_write"),
+                Err(e) => warn!("Failed to attach SSL_write uprobe: {}", e),
+            }
+
+            // SSL_read entry (stash args)
+            let prog: &mut UProbe = bpf.program_mut("ssl_read_entry").unwrap().try_into()?;
+            prog.load()?;
+            match prog.attach(Some("SSL_read"), 0, &libssl_path, None) {
+                Ok(_) => info!("TLS uprobe attached to SSL_read"),
+                Err(e) => warn!("Failed to attach SSL_read uprobe: {}", e),
+            }
+
+            // SSL_read return (read buffer)
+            let prog: &mut UProbe = bpf.program_mut("ssl_read_ret").unwrap().try_into()?;
+            prog.load()?;
+            match prog.attach(Some("SSL_read"), 0, &libssl_path, None) {
+                Ok(_) => info!("TLS uretprobe attached to SSL_read"),
+                Err(e) => warn!("Failed to attach SSL_read uretprobe: {}", e),
+            }
+
+            // SSL_free cleanup
+            let prog: &mut UProbe = bpf.program_mut("ssl_free_cleanup").unwrap().try_into()?;
+            prog.load()?;
+            match prog.attach(Some("SSL_free"), 0, &libssl_path, None) {
+                Ok(_) => info!("TLS uprobe attached to SSL_free"),
+                Err(e) => warn!("Failed to attach SSL_free uprobe: {}", e),
+            }
         } else {
-            warn!("libssl.so not found, TLS SNI extraction disabled");
+            warn!("libssl.so not found, TLS probes disabled");
         }
     }
 
@@ -673,6 +730,11 @@ async fn main() -> Result<()> {
     let policy_map: AyaHashMap<_, u32, u8> =
         AyaHashMap::try_from(bpf.take_map("POLICY_MAP").unwrap())?;
     let policy_map = Arc::new(Mutex::new(policy_map));
+
+    // TLS connection verdict map — shared between event loop and tracker
+    #[cfg(feature = "tls")]
+    let tls_verdict_map: AyaHashMap<_, TlsConnKey, u8> =
+        AyaHashMap::try_from(bpf.take_map("TLS_CONN_VERDICT").unwrap())?;
 
     // Kubernetes pod metadata cache (behind feature flag)
     #[cfg(feature = "k8s")]
@@ -726,6 +788,10 @@ async fn main() -> Result<()> {
         #[cfg(feature = "tls")]
         let mut sni_cache = tls::SniCache::new();
         #[cfg(feature = "tls")]
+        let mut tls_conn_tracker = tls::TlsConnTracker::new();
+        #[cfg(feature = "tls")]
+        let mut tls_verdict_map = tls_verdict_map;
+        #[cfg(feature = "tls")]
         let mut tls_last_gc = Instant::now();
 
         loop {
@@ -741,9 +807,113 @@ async fn main() -> Result<()> {
                 let item_len = item.len();
 
                 // Dispatch by event type byte (first byte) and item size
+                // TlsDataEvent: event_type 7 or 8
+                #[cfg(feature = "tls")]
+                if item_len >= std::mem::size_of::<TlsDataEvent>()
+                    && !item.is_empty()
+                    && (item[0] == 7 || item[0] == 8)
+                {
+                    let tls_data = unsafe {
+                        (item.as_ptr() as *const TlsDataEvent).read_unaligned()
+                    };
+                    drop(item);
+
+                    let direction_str = if tls_data.direction == 0 { "write" } else { "read" };
+                    let key = TlsConnKey {
+                        pid: tls_data.pid,
+                        _pad: 0,
+                        ssl_ptr: tls_data.ssl_ptr,
+                    };
+
+                    // Track chunk count
+                    let chunk_num = tls_conn_tracker.record_chunk(
+                        tls_data.pid,
+                        tls_data.ssl_ptr,
+                    );
+
+                    if tls_conn_tracker.is_decided(tls_data.pid, tls_data.ssl_ptr) {
+                        // Already decided interesting — forward data
+                        debug!(
+                            "TLS data {}: PID {} ({}) {} bytes",
+                            direction_str,
+                            tls_data.pid,
+                            tls_data.process_name(),
+                            tls_data.payload_len,
+                        );
+
+                        let processed = ProcessedEvent::from_tls_data_event(
+                            &tls_data,
+                            Some("HTTP/LLM".to_string()),
+                            None,
+                        );
+                        let _ = tx.send(processed);
+                    } else {
+                        // Still undecided — analyze this chunk
+                        let analysis = tls::analyze_first_chunk(
+                            tls_data.payload_bytes(),
+                            tls_data.direction,
+                        );
+
+                        if analysis.is_interesting {
+                            // Found LLM/MCP traffic!
+                            tls_conn_tracker.set_verdict(
+                                tls_data.pid,
+                                tls_data.ssl_ptr,
+                                true,
+                            );
+                            let _ = tls_verdict_map.insert(key, 1u8, 0); // INTERESTING
+
+                            info!(
+                                "TLS: PID {} ({}) -> {} ({}) [chunk #{}]",
+                                tls_data.pid,
+                                tls_data.process_name(),
+                                analysis.protocol.as_deref().unwrap_or("unknown"),
+                                analysis.details.as_deref().unwrap_or(""),
+                                chunk_num,
+                            );
+
+                            let processed = ProcessedEvent::from_tls_data_event(
+                                &tls_data,
+                                analysis.protocol,
+                                analysis.details,
+                            );
+                            let _ = tx.send(processed);
+                        } else if tls_conn_tracker.should_mark_boring(
+                            tls_data.pid,
+                            tls_data.ssl_ptr,
+                        ) {
+                            // Hit the limit — mark as boring
+                            tls_conn_tracker.set_verdict(
+                                tls_data.pid,
+                                tls_data.ssl_ptr,
+                                false,
+                            );
+                            let _ = tls_verdict_map.insert(key, 2u8, 0); // BORING
+
+                            debug!(
+                                "TLS: PID {} ({}) -> boring after {} chunks",
+                                tls_data.pid,
+                                tls_data.process_name(),
+                                chunk_num,
+                            );
+                        } else {
+                            debug!(
+                                "TLS {} (undecided #{}) PID {} ({}) {} bytes",
+                                direction_str,
+                                chunk_num,
+                                tls_data.pid,
+                                tls_data.process_name(),
+                                tls_data.payload_len,
+                            );
+                        }
+                    }
+
+                    continue;
+                }
+
+                // TlsHandshakeEvent: event_type 6
                 #[cfg(feature = "tls")]
                 if item_len >= std::mem::size_of::<TlsHandshakeEvent>()
-                    && item_len < std::mem::size_of::<NetworkEvent>()
                     && !item.is_empty()
                     && item[0] == 6
                 {
@@ -796,10 +966,11 @@ async fn main() -> Result<()> {
                 ml_last_gc = Instant::now();
             }
 
-            // Periodic SNI cache garbage collection
+            // Periodic SNI cache + TLS connection tracker garbage collection
             #[cfg(feature = "tls")]
             if tls_last_gc.elapsed() >= Duration::from_secs(60) {
                 sni_cache.gc();
+                tls_conn_tracker.gc();
                 tls_last_gc = Instant::now();
             }
         }
