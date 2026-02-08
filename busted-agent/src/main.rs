@@ -5,6 +5,8 @@ mod k8s;
 pub(crate) mod ml;
 mod server;
 mod siem;
+#[cfg(feature = "tls")]
+mod tls;
 
 use anyhow::{Context, Result};
 use aya::{
@@ -13,8 +15,12 @@ use aya::{
     programs::{KProbe, Lsm},
     Btf, Ebpf,
 };
+#[cfg(feature = "tls")]
+use aya::programs::UProbe;
 use aya_log::EbpfLogger;
 use busted_types::{AgentIdentity, NetworkEvent};
+#[cfg(feature = "tls")]
+use busted_types::TlsHandshakeEvent;
 use clap::Parser;
 use events::ProcessedEvent;
 use log::{debug, info, warn};
@@ -270,6 +276,8 @@ struct EventOutput {
     behavior_class: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sni: Option<String>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -326,6 +334,7 @@ impl From<&ProcessedEvent> for EventOutput {
                 #[cfg(not(feature = "ml"))]
                 { None }
             },
+            sni: e.sni.clone(),
         }
     }
 }
@@ -345,10 +354,29 @@ async fn handle_event(
     pid_stats: &mut HashMap<u32, PidStats>,
     #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
     #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
+    #[cfg(feature = "tls")] sni_cache: &tls::SniCache,
 ) {
     let dst_ip = event.dest_ip();
 
+    // Try SNI-based classification first (more reliable than IP)
+    #[cfg(feature = "tls")]
+    let sni_hostname: Option<&str> = sni_cache.get(event.pid);
+
     let pmap = provider_map.read().await;
+    #[cfg(feature = "tls")]
+    let provider = {
+        if event.dport == 443 {
+            if let Some(sni) = sni_hostname {
+                tls::classify_by_sni(sni)
+                    .or_else(|| classify_llm_provider(&dst_ip, event.dport, &pmap))
+            } else {
+                classify_llm_provider(&dst_ip, event.dport, &pmap)
+            }
+        } else {
+            classify_llm_provider(&dst_ip, event.dport, &pmap)
+        }
+    };
+    #[cfg(not(feature = "tls"))]
     let provider = classify_llm_provider(&dst_ip, event.dport, &pmap);
     drop(pmap);
 
@@ -409,6 +437,12 @@ async fn handle_event(
     }
     processed.request_rate = Some(request_rate);
     processed.session_bytes = Some(session_bytes);
+
+    // Attach SNI hostname if available
+    #[cfg(feature = "tls")]
+    {
+        processed.sni = sni_hostname.map(|s| s.to_string());
+    }
 
     // Enrich with Kubernetes pod metadata if available
     #[cfg(feature = "k8s")]
@@ -614,6 +648,21 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Attach TLS SNI uprobe (behind tls feature flag)
+    #[cfg(feature = "tls")]
+    {
+        if let Some(libssl_path) = tls::detect_libssl_path() {
+            let prog: &mut UProbe = bpf.program_mut("ssl_ctrl_sni").unwrap().try_into()?;
+            prog.load()?;
+            match prog.attach(Some("SSL_ctrl"), 0, &libssl_path, None) {
+                Ok(_) => info!("TLS uprobe attached to SSL_ctrl at {}", libssl_path.display()),
+                Err(e) => warn!("Failed to attach TLS uprobe: {}", e),
+            }
+        } else {
+            warn!("libssl.so not found, TLS SNI extraction disabled");
+        }
+    }
+
     info!("All eBPF programs loaded successfully");
 
     // Take BPF maps for identity and policy
@@ -674,6 +723,10 @@ async fn main() -> Result<()> {
         let mut ml_last_gc = Instant::now();
         #[cfg(feature = "ml")]
         info!("ML behavioral classifier initialized");
+        #[cfg(feature = "tls")]
+        let mut sni_cache = tls::SniCache::new();
+        #[cfg(feature = "tls")]
+        let mut tls_last_gc = Instant::now();
 
         loop {
             let mut guard = match async_fd.readable_mut().await {
@@ -685,7 +738,33 @@ async fn main() -> Result<()> {
             };
             let ring = guard.get_inner_mut();
             while let Some(item) = ring.next() {
-                if item.len() >= std::mem::size_of::<NetworkEvent>() {
+                let item_len = item.len();
+
+                // Dispatch by event type byte (first byte) and item size
+                #[cfg(feature = "tls")]
+                if item_len >= std::mem::size_of::<TlsHandshakeEvent>()
+                    && item_len < std::mem::size_of::<NetworkEvent>()
+                    && !item.is_empty()
+                    && item[0] == 6
+                {
+                    let tls_event = unsafe {
+                        (item.as_ptr() as *const TlsHandshakeEvent).read_unaligned()
+                    };
+                    let sni = tls_event.sni_str().to_string();
+                    if !sni.is_empty() {
+                        info!(
+                            "TLS SNI: PID {} ({}) -> {}",
+                            tls_event.pid,
+                            tls_event.process_name(),
+                            sni,
+                        );
+                        sni_cache.insert(tls_event.pid, sni);
+                    }
+                    drop(item);
+                    continue;
+                }
+
+                if item_len >= std::mem::size_of::<NetworkEvent>() {
                     let event =
                         unsafe { (item.as_ptr() as *const NetworkEvent).read_unaligned() };
                     drop(item); // consume the ring buf entry before async work
@@ -702,6 +781,8 @@ async fn main() -> Result<()> {
                         &k8s_cache_clone,
                         #[cfg(feature = "ml")]
                         &mut ml_classifier,
+                        #[cfg(feature = "tls")]
+                        &sni_cache,
                     )
                     .await;
                 }
@@ -713,6 +794,13 @@ async fn main() -> Result<()> {
             if ml_last_gc.elapsed() >= Duration::from_secs(60) {
                 ml_classifier.gc_idle_pids(Duration::from_secs(300));
                 ml_last_gc = Instant::now();
+            }
+
+            // Periodic SNI cache garbage collection
+            #[cfg(feature = "tls")]
+            if tls_last_gc.elapsed() >= Duration::from_secs(60) {
+                sni_cache.gc();
+                tls_last_gc = Instant::now();
             }
         }
     });

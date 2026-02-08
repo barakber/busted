@@ -24,6 +24,8 @@ pub struct ProcessedEvent {
     pub service_account: Option<String>,
     #[cfg(feature = "ml")]
     pub behavior: Option<crate::ml::BehaviorIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
 }
 
 impl ProcessedEvent {
@@ -63,6 +65,7 @@ impl ProcessedEvent {
             service_account: None,
             #[cfg(feature = "ml")]
             behavior: None,
+            sni: None,
         }
     }
 }

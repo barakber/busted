@@ -23,6 +23,8 @@ pub enum EventType {
     ConnectionClosed = 4,
     /// DNS query (UDP to port 53)
     DnsQuery = 5,
+    /// TLS handshake (SNI extraction)
+    TlsHandshake = 6,
 }
 
 /// Network protocol family
@@ -45,6 +47,42 @@ pub union IpAddress {
 impl IpAddress {
     pub const fn zero() -> Self {
         IpAddress { ipv4: 0 }
+    }
+}
+
+/// Maximum length for SNI hostnames
+pub const SNI_MAX_LEN: usize = 128;
+
+/// TLS handshake event captured by eBPF uprobe on SSL_ctrl
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TlsHandshakeEvent {
+    /// Event type (always 6 = TlsHandshake)
+    pub event_type: u8,
+    pub _pad: [u8; 3],
+    /// Process ID
+    pub pid: u32,
+    /// Thread ID
+    pub tid: u32,
+    /// Timestamp (nanoseconds since boot)
+    pub timestamp_ns: u64,
+    /// Process/command name
+    pub comm: [u8; TASK_COMM_LEN],
+    /// SNI hostname
+    pub sni: [u8; SNI_MAX_LEN],
+}
+
+impl TlsHandshakeEvent {
+    pub const fn new() -> Self {
+        TlsHandshakeEvent {
+            event_type: 6,
+            _pad: [0; 3],
+            pid: 0,
+            tid: 0,
+            timestamp_ns: 0,
+            comm: [0; TASK_COMM_LEN],
+            sni: [0; SNI_MAX_LEN],
+        }
     }
 }
 
@@ -180,12 +218,27 @@ mod pod_impls {
     // SAFETY: All types are #[repr(C)], Copy, and contain only primitive/array fields.
     unsafe impl aya::Pod for NetworkEvent {}
     unsafe impl aya::Pod for AgentIdentity {}
+    unsafe impl aya::Pod for TlsHandshakeEvent {}
 }
 
 #[cfg(feature = "user")]
 pub mod userspace {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    impl TlsHandshakeEvent {
+        /// Get SNI hostname as string
+        pub fn sni_str(&self) -> &str {
+            let len = self.sni.iter().position(|&c| c == 0).unwrap_or(self.sni.len());
+            std::str::from_utf8(&self.sni[..len]).unwrap_or("<invalid>")
+        }
+
+        /// Get process name as string
+        pub fn process_name(&self) -> &str {
+            let len = self.comm.iter().position(|&c| c == 0).unwrap_or(self.comm.len());
+            std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
+        }
+    }
 
     impl NetworkEvent {
         /// Get source IP as std::net::IpAddr

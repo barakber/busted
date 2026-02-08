@@ -38,6 +38,8 @@ pub struct ProcessedEvent {
     pub behavior_class: Option<String>,
     #[serde(default)]
     pub cluster_id: Option<i32>,
+    #[serde(default)]
+    pub sni: Option<String>,
 }
 
 #[derive(Clone, Debug)]

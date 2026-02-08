@@ -5,13 +5,14 @@ use aya_ebpf::{
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
         bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_probe_read_user_str_bytes,
     },
-    macros::{kprobe, lsm, map},
+    macros::{kprobe, lsm, map, uprobe},
     maps::{HashMap, RingBuf},
     programs::{LsmContext, ProbeContext},
 };
 use aya_log_ebpf::info;
-use busted_types::{AgentIdentity, NetworkEvent, TASK_COMM_LEN};
+use busted_types::{AgentIdentity, NetworkEvent, TlsHandshakeEvent, SNI_MAX_LEN, TASK_COMM_LEN};
 
 /// Ring buffer for sending events to userspace (256KB shared buffer)
 #[map]
@@ -240,6 +241,68 @@ fn try_udp_sendmsg(ctx: ProbeContext) -> Result<u32, u32> {
     }
 
     EVENTS.output(&event, 0).ok();
+
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// Uprobes (TLS SNI extraction)
+// ---------------------------------------------------------------------------
+
+/// SSL_CTRL_SET_TLSEXT_HOSTNAME command code
+const SSL_CTRL_SET_TLSEXT_HOSTNAME: i32 = 55;
+
+/// Uprobe on OpenSSL SSL_ctrl to extract SNI hostname.
+/// SSL_ctrl(SSL *ssl, int cmd, long larg, void *parg)
+/// When cmd == 55 (SSL_CTRL_SET_TLSEXT_HOSTNAME), parg is the hostname string.
+#[uprobe]
+pub fn ssl_ctrl_sni(ctx: ProbeContext) -> u32 {
+    match try_ssl_ctrl_sni(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_ssl_ctrl_sni(ctx: ProbeContext) -> Result<u32, u32> {
+    // arg1: cmd (int) — only process SSL_CTRL_SET_TLSEXT_HOSTNAME (55)
+    let cmd: i32 = match ctx.arg(1) {
+        Some(v) => v,
+        None => return Ok(0),
+    };
+    if cmd != SSL_CTRL_SET_TLSEXT_HOSTNAME {
+        return Ok(0);
+    }
+
+    // arg3: parg (*const u8) — pointer to hostname string
+    let hostname_ptr: *const u8 = match ctx.arg(3) {
+        Some(v) => v,
+        None => return Ok(0),
+    };
+    if hostname_ptr.is_null() {
+        return Ok(0);
+    }
+
+    let mut event = TlsHandshakeEvent::new();
+
+    // Read hostname from user space
+    let mut sni_buf = [0u8; SNI_MAX_LEN];
+    match unsafe { bpf_probe_read_user_str_bytes(hostname_ptr, &mut sni_buf) } {
+        Ok(s) => {
+            let len = s.len().min(SNI_MAX_LEN);
+            event.sni[..len].copy_from_slice(&s[..len]);
+        }
+        Err(_) => return Ok(0),
+    }
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    event.pid = (pid_tgid >> 32) as u32;
+    event.tid = (pid_tgid & 0xFFFFFFFF) as u32;
+    event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
+    event.comm = get_process_name();
+
+    EVENTS.output(&event, 0).ok();
+
+    info!(&ctx, "TLS SNI from PID {}", event.pid);
 
     Ok(0)
 }

@@ -35,5 +35,6 @@ rand = { version = "0.8", optional = true }
 [features]
 k8s = ["dep:kube", "dep:k8s-openapi"]
 ml = ["dep:ndarray", "dep:linfa", "dep:linfa-trees", "dep:hdbscan", "dep:rand"]
+tls = []
 
 [build-dependencies]
