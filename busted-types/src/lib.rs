@@ -58,6 +58,8 @@ pub struct NetworkEvent {
     pub uid: u32,
     /// Group ID
     pub gid: u32,
+    /// Cgroup ID
+    pub cgroup_id: u64,
 
     /// Event type
     pub event_type: u8,
@@ -96,6 +98,7 @@ impl NetworkEvent {
             tid: 0,
             uid: 0,
             gid: 0,
+            cgroup_id: 0,
             event_type: 0,
             family: 0,
             sport: 0,

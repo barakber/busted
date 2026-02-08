@@ -32,7 +32,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.filter_event_type, String::new(), "All");
-                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED"] {
+                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED"] {
                     ui.selectable_value(
                         &mut app.filter_event_type,
                         t.to_string(),
@@ -91,6 +91,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
         .column(Column::auto().at_least(50.0)) // Port
         .column(Column::auto().at_least(70.0)) // Bytes
         .column(Column::auto().at_least(70.0)) // Provider
+        .column(Column::auto().at_least(80.0)) // Container
         .min_scrolled_height(0.0);
 
     let table = if app.auto_scroll {
@@ -109,6 +110,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             header.col(|ui| { ui.strong("Port"); });
             header.col(|ui| { ui.strong("Bytes"); });
             header.col(|ui| { ui.strong("Provider"); });
+            header.col(|ui| { ui.strong("Container"); });
         })
         .body(|body| {
             body.rows(18.0, row_count, |mut row| {
@@ -123,6 +125,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
                 row.col(|ui| { ui.label(format_bytes(event.bytes)); });
                 row.col(|ui| {
                     ui.label(event.provider.as_deref().unwrap_or("-"));
+                });
+                row.col(|ui| {
+                    let cid = if event.container_id.is_empty() { "-" } else { &event.container_id };
+                    ui.label(cid);
                 });
             });
         });

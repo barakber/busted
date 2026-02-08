@@ -18,6 +18,12 @@ pub struct ProcessedEvent {
     pub provider: Option<String>,
     pub policy: Option<String>,
     pub container_id: String,
+    #[serde(default)]
+    pub cgroup_id: u64,
+    #[serde(default)]
+    pub request_rate: Option<f64>,
+    #[serde(default)]
+    pub session_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

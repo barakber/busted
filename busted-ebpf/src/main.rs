@@ -3,19 +3,19 @@
 
 use aya_ebpf::{
     helpers::{
-        bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
-        bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
+        bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
     },
-    macros::{kprobe, map},
-    maps::{HashMap, PerfEventArray},
-    programs::ProbeContext,
+    macros::{kprobe, lsm, map},
+    maps::{HashMap, RingBuf},
+    programs::{LsmContext, ProbeContext},
 };
 use aya_log_ebpf::info;
 use busted_types::{AgentIdentity, NetworkEvent, TASK_COMM_LEN};
 
-/// Ring buffer for sending events to userspace
+/// Ring buffer for sending events to userspace (256KB shared buffer)
 #[map]
-static EVENTS: PerfEventArray<NetworkEvent> = PerfEventArray::new(0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(262144, 0);
 
 /// Map to store known AI agent identities
 #[map]
@@ -38,9 +38,22 @@ fn get_process_name() -> [u8; TASK_COMM_LEN] {
     }
 }
 
-/// Helper to read cgroup path (simplified for now)
+/// Fill common event fields (pid, tid, uid, gid, cgroup_id, timestamp, comm)
 #[inline(always)]
-fn get_cgroup_info(event: &mut NetworkEvent) {
+fn fill_common_fields(event: &mut NetworkEvent) {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    event.pid = (pid_tgid >> 32) as u32;
+    event.tid = (pid_tgid & 0xFFFFFFFF) as u32;
+
+    let uid_gid = bpf_get_current_uid_gid();
+    event.uid = (uid_gid & 0xFFFFFFFF) as u32;
+    event.gid = (uid_gid >> 32) as u32;
+
+    event.cgroup_id = unsafe { bpf_get_current_cgroup_id() };
+    event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
+    event.comm = get_process_name();
+
+    // Zero container/cgroup path fields (resolved in userspace)
     event.cgroup[0] = 0;
     event.container_id[0] = 0;
 }
@@ -91,6 +104,10 @@ fn read_sock_info(sock_ptr: *const u8, event: &mut NetworkEvent) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Kprobes
+// ---------------------------------------------------------------------------
+
 /// Probe on tcp_connect to capture outgoing TCP connections
 #[kprobe]
 pub fn tcp_connect(ctx: ProbeContext) -> u32 {
@@ -102,27 +119,14 @@ pub fn tcp_connect(ctx: ProbeContext) -> u32 {
 
 fn try_tcp_connect(ctx: ProbeContext) -> Result<u32, u32> {
     let mut event = NetworkEvent::new();
-
-    let pid_tgid = bpf_get_current_pid_tgid();
-    event.pid = (pid_tgid >> 32) as u32;
-    event.tid = (pid_tgid & 0xFFFFFFFF) as u32;
-
-    let uid_gid = bpf_get_current_uid_gid();
-    event.uid = (uid_gid & 0xFFFFFFFF) as u32;
-    event.gid = (uid_gid >> 32) as u32;
-
-    event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
-    event.comm = get_process_name();
-    get_cgroup_info(&mut event);
-
+    fill_common_fields(&mut event);
     event.event_type = 1; // TcpConnect
 
-    // Extract socket info from first argument (struct sock *)
     if let Some(sock_ptr) = ctx.arg::<*const u8>(0) {
         read_sock_info(sock_ptr, &mut event);
     }
 
-    EVENTS.output(&ctx, &event, 0);
+    EVENTS.output(&event, 0).ok();
 
     info!(&ctx, "TCP connect from PID {} ({})", event.pid, event.comm[0]);
 
@@ -140,32 +144,18 @@ pub fn tcp_sendmsg(ctx: ProbeContext) -> u32 {
 
 fn try_tcp_sendmsg(ctx: ProbeContext) -> Result<u32, u32> {
     let mut event = NetworkEvent::new();
-
-    let pid_tgid = bpf_get_current_pid_tgid();
-    event.pid = (pid_tgid >> 32) as u32;
-    event.tid = (pid_tgid & 0xFFFFFFFF) as u32;
-
-    let uid_gid = bpf_get_current_uid_gid();
-    event.uid = (uid_gid & 0xFFFFFFFF) as u32;
-    event.gid = (uid_gid >> 32) as u32;
-
-    event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
-    event.comm = get_process_name();
-    get_cgroup_info(&mut event);
-
+    fill_common_fields(&mut event);
     event.event_type = 2; // DataSent
 
-    // Extract socket info from first argument (struct sock *)
     if let Some(sock_ptr) = ctx.arg::<*const u8>(0) {
         read_sock_info(sock_ptr, &mut event);
     }
 
-    // Extract size from third argument (size_t size)
     if let Some(size) = ctx.arg::<u64>(2) {
         event.bytes = size;
     }
 
-    EVENTS.output(&ctx, &event, 0);
+    EVENTS.output(&event, 0).ok();
 
     Ok(0)
 }
@@ -181,33 +171,74 @@ pub fn tcp_recvmsg(ctx: ProbeContext) -> u32 {
 
 fn try_tcp_recvmsg(ctx: ProbeContext) -> Result<u32, u32> {
     let mut event = NetworkEvent::new();
-
-    let pid_tgid = bpf_get_current_pid_tgid();
-    event.pid = (pid_tgid >> 32) as u32;
-    event.tid = (pid_tgid & 0xFFFFFFFF) as u32;
-
-    let uid_gid = bpf_get_current_uid_gid();
-    event.uid = (uid_gid & 0xFFFFFFFF) as u32;
-    event.gid = (uid_gid >> 32) as u32;
-
-    event.timestamp_ns = unsafe { bpf_ktime_get_ns() };
-    event.comm = get_process_name();
-    get_cgroup_info(&mut event);
-
+    fill_common_fields(&mut event);
     event.event_type = 3; // DataReceived
 
-    // Extract socket info from first argument (struct sock *)
     if let Some(sock_ptr) = ctx.arg::<*const u8>(0) {
         read_sock_info(sock_ptr, &mut event);
     }
 
-    // Extract requested buffer size from third argument (size_t len)
     if let Some(len) = ctx.arg::<u64>(2) {
         event.bytes = len;
     }
 
-    EVENTS.output(&ctx, &event, 0);
+    EVENTS.output(&event, 0).ok();
 
+    Ok(0)
+}
+
+/// Probe on tcp_close to capture connection teardowns
+#[kprobe]
+pub fn tcp_close(ctx: ProbeContext) -> u32 {
+    match try_tcp_close(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_tcp_close(ctx: ProbeContext) -> Result<u32, u32> {
+    let mut event = NetworkEvent::new();
+    fill_common_fields(&mut event);
+    event.event_type = 4; // ConnectionClosed
+
+    if let Some(sock_ptr) = ctx.arg::<*const u8>(0) {
+        read_sock_info(sock_ptr, &mut event);
+    }
+
+    // No bytes field for close events
+    EVENTS.output(&event, 0).ok();
+
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// LSM hook for policy enforcement
+// ---------------------------------------------------------------------------
+
+/// LSM hook on socket_connect for optional blocking of connections.
+/// Returns 0 to allow, -1 (EPERM) to deny.
+/// Only denies if the PID has value 1 (Deny) in POLICY_MAP.
+#[lsm(hook = "socket_connect")]
+pub fn lsm_socket_connect(ctx: LsmContext) -> i32 {
+    match try_lsm_socket_connect(ctx) {
+        Ok(ret) => ret,
+        Err(_) => 0, // On error, allow
+    }
+}
+
+fn try_lsm_socket_connect(_ctx: LsmContext) -> Result<i32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = (pid_tgid >> 32) as u32;
+
+    // Check policy map for this PID
+    if let Some(decision) = unsafe { POLICY_MAP.get(&pid) } {
+        if *decision == 1 {
+            // Deny
+            return Ok(-1); // -EPERM
+        }
+    }
+
+    // Allow by default
     Ok(0)
 }
 

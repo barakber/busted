@@ -16,6 +16,9 @@ pub struct ProcessedEvent {
     pub provider: Option<String>,
     pub policy: Option<String>,
     pub container_id: String,
+    pub cgroup_id: u64,
+    pub request_rate: Option<f64>,
+    pub session_bytes: Option<u64>,
 }
 
 impl ProcessedEvent {
@@ -46,6 +49,9 @@ impl ProcessedEvent {
             provider: provider.map(|s| s.to_string()),
             policy: policy.map(|s| s.to_string()),
             container_id: event.container_id_str().to_string(),
+            cgroup_id: event.cgroup_id,
+            request_rate: None,
+            session_bytes: None,
         }
     }
 }

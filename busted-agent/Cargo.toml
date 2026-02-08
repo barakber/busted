@@ -21,7 +21,8 @@ env_logger = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-bytes = "1.5"
 libc = "0.2.180"
+regex = "1"
+reqwest = { version = "0.12", features = ["json"] }
 
 [build-dependencies]

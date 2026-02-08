@@ -1,30 +1,33 @@
 mod events;
 mod server;
+mod siem;
 
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::{HashMap as AyaHashMap, perf::AsyncPerfEventArray},
-    programs::KProbe,
-    util::online_cpus,
-    Ebpf,
+    maps::{HashMap as AyaHashMap, MapData, RingBuf},
+    programs::{KProbe, Lsm},
+    Btf, Ebpf,
 };
 use aya_log::EbpfLogger;
 use busted_types::{AgentIdentity, NetworkEvent};
-use bytes::BytesMut;
 use clap::Parser;
 use events::ProcessedEvent;
-use log::{info, warn};
+use log::{debug, info, warn};
+use regex::Regex;
 use serde::Serialize;
 use std::{
     collections::HashMap,
     net::{IpAddr, ToSocketAddrs},
-    sync::{Arc, OnceLock},
+    sync::Arc,
+    time::Instant,
 };
 use tokio::{
+    io::unix::AsyncFd,
     signal,
-    sync::{broadcast, Mutex},
+    sync::{broadcast, Mutex, RwLock},
     task,
+    time::Duration,
 };
 
 // ---------------------------------------------------------------------------
@@ -43,13 +46,17 @@ struct Cli {
     #[arg(short, long, default_value = "text")]
     format: String,
 
-    /// Enable policy enforcement (audit mode)
+    /// Enable policy enforcement (audit mode, or deny with LSM)
     #[arg(short, long)]
     enforce: bool,
+
+    /// Output sink: "stdout" (default), "webhook:URL", "file:PATH", "syslog:HOST"
+    #[arg(short, long, default_value = "stdout")]
+    output: String,
 }
 
 // ---------------------------------------------------------------------------
-// LLM provider classification (Phase 2)
+// LLM provider classification
 // ---------------------------------------------------------------------------
 
 const LLM_ENDPOINTS: &[(&str, &str)] = &[
@@ -63,10 +70,14 @@ const LLM_ENDPOINTS: &[(&str, &str)] = &[
     ("bedrock-runtime.us-west-2.amazonaws.com", "AWS Bedrock"),
     ("api.cohere.ai", "Cohere"),
     ("api-inference.huggingface.co", "HuggingFace"),
+    ("api.mistral.ai", "Mistral"),
+    ("api.groq.com", "Groq"),
+    ("api.together.xyz", "Together"),
+    ("api.deepseek.com", "DeepSeek"),
+    ("api.perplexity.ai", "Perplexity"),
 ];
 
 /// Known subnet prefixes for LLM providers (covers CDN/anycast rotation).
-/// Format: (first 2 octets as u16, provider name)
 const LLM_SUBNETS: &[([u8; 2], &str)] = &[
     // Anthropic (160.79.x.x)
     ([160, 79], "Anthropic"),
@@ -84,38 +95,38 @@ const LLM_SUBNETS_V6: &[([u8; 4], &str)] = &[
     ([0x26, 0x00, 0x19, 0x01], "Anthropic"),
 ];
 
-static PROVIDER_MAP: OnceLock<HashMap<IpAddr, &'static str>> = OnceLock::new();
-
-fn init_provider_map() {
-    let map = PROVIDER_MAP.get_or_init(|| {
-        let mut m = HashMap::new();
-        for &(hostname, provider) in LLM_ENDPOINTS {
-            let addr = format!("{}:443", hostname);
-            match addr.to_socket_addrs() {
-                Ok(addrs) => {
-                    for a in addrs {
-                        info!("  {} -> {} ({})", hostname, a.ip(), provider);
-                        m.insert(a.ip(), provider);
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to resolve {}: {}", hostname, e);
+/// Resolve all LLM endpoints to IPs and return the map.
+fn resolve_provider_ips() -> HashMap<IpAddr, &'static str> {
+    let mut m = HashMap::new();
+    for &(hostname, provider) in LLM_ENDPOINTS {
+        let addr = format!("{}:443", hostname);
+        match addr.to_socket_addrs() {
+            Ok(addrs) => {
+                for a in addrs {
+                    info!("  {} -> {} ({})", hostname, a.ip(), provider);
+                    m.insert(a.ip(), provider);
                 }
             }
+            Err(e) => {
+                warn!("Failed to resolve {}: {}", hostname, e);
+            }
         }
-        info!("Resolved {} LLM provider IPs", m.len());
-        m
-    });
-    let _ = map;
+    }
+    info!("Resolved {} LLM provider IPs", m.len());
+    m
 }
 
-fn classify_llm_provider(ip: &IpAddr, dport: u16) -> Option<&'static str> {
+fn classify_llm_provider(
+    ip: &IpAddr,
+    dport: u16,
+    provider_map: &HashMap<IpAddr, &'static str>,
+) -> Option<&'static str> {
     if dport != 443 {
         return None;
     }
 
     // 1. Exact IP match from DNS resolution
-    if let Some(provider) = PROVIDER_MAP.get().and_then(|m| m.get(ip).copied()) {
+    if let Some(provider) = provider_map.get(ip).copied() {
         return Some(provider);
     }
 
@@ -147,7 +158,83 @@ fn classify_llm_provider(ip: &IpAddr, dport: u16) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// Structured output (Phase 4)
+// Container resolver (Kubernetes / Docker)
+// ---------------------------------------------------------------------------
+
+fn resolve_container_id(pid: u32, cache: &mut HashMap<u32, String>) -> String {
+    if let Some(cached) = cache.get(&pid) {
+        return cached.clone();
+    }
+
+    let container_id = resolve_container_id_from_proc(pid);
+
+    // LRU-style: clear cache if too large
+    if cache.len() > 10_000 {
+        cache.clear();
+    }
+    cache.insert(pid, container_id.clone());
+    container_id
+}
+
+fn resolve_container_id_from_proc(pid: u32) -> String {
+    let path = format!("/proc/{}/cgroup", pid);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    // Match Docker or containerd container IDs
+    let re = Regex::new(r"(?:docker-|cri-containerd-)([a-f0-9]{64})\.scope").unwrap();
+    if let Some(caps) = re.captures(&content) {
+        if let Some(m) = caps.get(1) {
+            return m.as_str()[..12].to_string(); // Short container ID
+        }
+    }
+
+    // Also try bare hex IDs in cgroup path (common in k8s)
+    let re2 = Regex::new(r"/([a-f0-9]{64})$").unwrap();
+    for line in content.lines() {
+        if let Some(caps) = re2.captures(line) {
+            if let Some(m) = caps.get(1) {
+                return m.as_str()[..12].to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
+// ---------------------------------------------------------------------------
+// Traffic pattern heuristics
+// ---------------------------------------------------------------------------
+
+struct PidStats {
+    first_seen: Instant,
+    event_count: u64,
+    bytes_total: u64,
+}
+
+impl PidStats {
+    fn new() -> Self {
+        Self {
+            first_seen: Instant::now(),
+            event_count: 0,
+            bytes_total: 0,
+        }
+    }
+
+    fn request_rate(&self) -> f64 {
+        let elapsed = self.first_seen.elapsed().as_secs_f64();
+        if elapsed < 0.001 {
+            0.0
+        } else {
+            self.event_count as f64 / elapsed
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structured output
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -165,6 +252,9 @@ struct EventOutput {
     provider: Option<String>,
     policy: Option<String>,
     container_id: String,
+    cgroup_id: u64,
+    request_rate: Option<f64>,
+    session_bytes: Option<u64>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -183,29 +273,41 @@ impl From<&ProcessedEvent> for EventOutput {
             provider: e.provider.clone(),
             policy: e.policy.clone(),
             container_id: e.container_id.clone(),
+            cgroup_id: e.cgroup_id,
+            request_rate: e.request_rate,
+            session_bytes: e.session_bytes,
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Event handling (Phase 3 + 4 + 5)
+// Event handling
 // ---------------------------------------------------------------------------
 
 async fn handle_event(
     event: NetworkEvent,
     tx: &broadcast::Sender<ProcessedEvent>,
-    identity_map: &Arc<Mutex<AyaHashMap<aya::maps::MapData, u32, AgentIdentity>>>,
-    policy_map: &Arc<Mutex<AyaHashMap<aya::maps::MapData, u32, u8>>>,
+    identity_map: &Arc<Mutex<AyaHashMap<MapData, u32, AgentIdentity>>>,
+    policy_map: &Arc<Mutex<AyaHashMap<MapData, u32, u8>>>,
+    provider_map: &Arc<RwLock<HashMap<IpAddr, &'static str>>>,
     enforce: bool,
+    container_cache: &mut HashMap<u32, String>,
+    pid_stats: &mut HashMap<u32, PidStats>,
 ) {
     let dst_ip = event.dest_ip();
 
-    let provider = classify_llm_provider(&dst_ip, event.dport);
+    let pmap = provider_map.read().await;
+    let provider = classify_llm_provider(&dst_ip, event.dport, &pmap);
+    drop(pmap);
 
     let policy_str = if provider.is_some() && enforce {
-        // Audit mode: log but allow (kprobes can't block traffic)
         if let Ok(mut pmap) = policy_map.try_lock() {
-            // Write audit decision (2 = Audit)
+            // With LSM: write Deny (1) to block; without LSM: Audit (2)
+            let _ = pmap.insert(event.pid, 1, 0);
+        }
+        Some("deny")
+    } else if provider.is_some() {
+        if let Ok(mut pmap) = policy_map.try_lock() {
             let _ = pmap.insert(event.pid, 2, 0);
         }
         Some("audit")
@@ -226,14 +328,41 @@ async fn handle_event(
         }
     }
 
-    let processed = ProcessedEvent::from_network_event(&event, provider, policy_str);
+    // Resolve container ID from /proc
+    let container_id = resolve_container_id(event.pid, container_cache);
 
-    // Send to broadcast channel (for UI and other consumers)
+    // Update per-PID traffic stats
+    let stats = pid_stats
+        .entry(event.pid)
+        .or_insert_with(PidStats::new);
+    stats.event_count += 1;
+    stats.bytes_total += event.bytes;
+    let request_rate = stats.request_rate();
+    let session_bytes = stats.bytes_total;
+
+    // Flag high-rate port-443 traffic as possible LLM even without IP match
+    if provider.is_none() && event.dport == 443 && request_rate > 10.0 {
+        debug!(
+            "High-rate TLS traffic from PID {} ({}): {:.1} events/sec",
+            event.pid,
+            event.process_name(),
+            request_rate
+        );
+    }
+
+    let mut processed = ProcessedEvent::from_network_event(&event, provider, policy_str);
+    // Override container_id with the one resolved from /proc (more reliable)
+    if !container_id.is_empty() {
+        processed.container_id = container_id;
+    }
+    processed.request_rate = Some(request_rate);
+    processed.session_bytes = Some(session_bytes);
+
     let _ = tx.send(processed);
 }
 
 // ---------------------------------------------------------------------------
-// CLI output consumer (Phase 4 + 5)
+// CLI output consumer
 // ---------------------------------------------------------------------------
 
 async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format: String) {
@@ -247,10 +376,9 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                     }
                 }
                 _ => {
-                    // text format
                     if let Some(ref provider) = event.provider {
                         info!(
-                            "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}",
+                            "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}{}",
                             event.event_type,
                             event.timestamp,
                             event.pid,
@@ -263,6 +391,11 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                             event.bytes,
                             provider,
                             event.policy.as_ref().map(|p| format!(" | Policy: {}", p)).unwrap_or_default(),
+                            if !event.container_id.is_empty() {
+                                format!(" | Container: {}", event.container_id)
+                            } else {
+                                String::new()
+                            },
                         );
                     } else {
                         log::debug!(
@@ -300,8 +433,24 @@ async fn main() -> Result<()> {
     )
     .init();
 
-    // Resolve LLM provider IPs
-    init_provider_map();
+    // Resolve LLM provider IPs into shared map
+    let provider_map = Arc::new(RwLock::new(resolve_provider_ips()));
+
+    // Spawn periodic DNS re-resolution task
+    {
+        let pm = provider_map.clone();
+        task::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let new_map = tokio::task::spawn_blocking(resolve_provider_ips)
+                    .await
+                    .unwrap_or_default();
+                let count = new_map.len();
+                *pm.write().await = new_map;
+                info!("Re-resolved {} LLM provider IPs", count);
+            }
+        });
+    }
 
     // Bump memlock rlimit for older kernels
     let rlim = libc::rlimit {
@@ -329,7 +478,7 @@ async fn main() -> Result<()> {
 
     info!("Loading eBPF programs...");
 
-    // Attach probes
+    // Attach kprobes
     let program: &mut KProbe = bpf.program_mut("tcp_connect").unwrap().try_into()?;
     program.load()?;
     program
@@ -351,9 +500,37 @@ async fn main() -> Result<()> {
         .context("Failed to attach tcp_recvmsg")?;
     info!("Attached to tcp_recvmsg");
 
+    let program: &mut KProbe = bpf.program_mut("tcp_close").unwrap().try_into()?;
+    program.load()?;
+    program
+        .attach("tcp_close", 0)
+        .context("Failed to attach tcp_close")?;
+    info!("Attached to tcp_close");
+
+    // Try to attach LSM hook (optional — requires CONFIG_BPF_LSM and lsm=bpf boot param)
+    match Btf::from_sys_fs() {
+        Ok(btf) => {
+            if let Some(prog) = bpf.program_mut("lsm_socket_connect") {
+                match TryInto::<&mut Lsm>::try_into(prog) {
+                    Ok(lsm) => match lsm.load("socket_connect", &btf) {
+                        Ok(()) => match lsm.attach() {
+                            Ok(_) => info!("LSM socket_connect enforcement attached"),
+                            Err(e) => warn!("LSM attach failed (BPF not in LSM list?): {}", e),
+                        },
+                        Err(e) => warn!("LSM load failed: {}", e),
+                    },
+                    Err(e) => warn!("LSM program type mismatch: {}", e),
+                }
+            }
+        }
+        Err(e) => {
+            warn!("BTF not available, LSM hooks disabled: {}", e);
+        }
+    }
+
     info!("All eBPF programs loaded successfully");
 
-    // Take BPF maps for identity and policy (Phase 3)
+    // Take BPF maps for identity and policy
     let identity_map: AyaHashMap<_, u32, AgentIdentity> =
         AyaHashMap::try_from(bpf.take_map("AGENT_IDENTITIES").unwrap())?;
     let identity_map = Arc::new(Mutex::new(identity_map));
@@ -362,7 +539,7 @@ async fn main() -> Result<()> {
         AyaHashMap::try_from(bpf.take_map("POLICY_MAP").unwrap())?;
     let policy_map = Arc::new(Mutex::new(policy_map));
 
-    // Event broadcast channel (Phase 5)
+    // Event broadcast channel
     let (tx, _) = broadcast::channel::<ProcessedEvent>(4096);
 
     // Start CLI output consumer
@@ -370,37 +547,60 @@ async fn main() -> Result<()> {
     let format = cli.format.clone();
     task::spawn(cli_output_consumer(cli_rx, format));
 
-    // Start Unix socket server for UI (Phase 5b)
+    // Start Unix socket server for UI
     let server_rx = tx.subscribe();
     task::spawn(server::run_socket_server(server_rx));
 
-    // Get the events perf array
-    let mut perf_array = AsyncPerfEventArray::try_from(bpf.take_map("EVENTS").unwrap())?;
+    // Start SIEM output consumer if configured
+    if cli.output != "stdout" {
+        if let Some(sink) = siem::OutputSink::parse(&cli.output) {
+            let siem_rx = tx.subscribe();
+            task::spawn(siem::run_siem_consumer(siem_rx, sink));
+        } else {
+            warn!("Unknown output sink format: {}", cli.output);
+        }
+    }
 
+    // Set up RingBuf consumer
+    let ring_buf = RingBuf::try_from(bpf.take_map("EVENTS").unwrap())?;
+    let async_fd = AsyncFd::new(ring_buf)?;
     let enforce = cli.enforce;
 
-    // Process events from all CPUs
-    for cpu_id in online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))? {
-        let mut buf = perf_array.open(cpu_id, None)?;
-        let tx = tx.clone();
-        let identity_map = identity_map.clone();
-        let policy_map = policy_map.clone();
+    task::spawn(async move {
+        let mut container_cache: HashMap<u32, String> = HashMap::new();
+        let mut pid_stats: HashMap<u32, PidStats> = HashMap::new();
+        let mut async_fd = async_fd;
 
-        task::spawn(async move {
-            let mut buffers = (0..10)
-                .map(|_| BytesMut::with_capacity(std::mem::size_of::<NetworkEvent>()))
-                .collect::<Vec<_>>();
-
-            loop {
-                let events = buf.read_events(&mut buffers).await.unwrap();
-                for buf in buffers.iter_mut().take(events.read) {
-                    let ptr = buf.as_ptr() as *const NetworkEvent;
-                    let event = unsafe { ptr.read_unaligned() };
-                    handle_event(event, &tx, &identity_map, &policy_map, enforce).await;
+        loop {
+            let mut guard = match async_fd.readable_mut().await {
+                Ok(g) => g,
+                Err(e) => {
+                    warn!("RingBuf async fd error: {}", e);
+                    break;
+                }
+            };
+            let ring = guard.get_inner_mut();
+            while let Some(item) = ring.next() {
+                if item.len() >= std::mem::size_of::<NetworkEvent>() {
+                    let event =
+                        unsafe { (item.as_ptr() as *const NetworkEvent).read_unaligned() };
+                    drop(item); // consume the ring buf entry before async work
+                    handle_event(
+                        event,
+                        &tx,
+                        &identity_map,
+                        &policy_map,
+                        &provider_map,
+                        enforce,
+                        &mut container_cache,
+                        &mut pid_stats,
+                    )
+                    .await;
                 }
             }
-        });
-    }
+            guard.clear_ready();
+        }
+    });
 
     info!("Monitoring LLM/AI communications... Press Ctrl-C to exit");
 
