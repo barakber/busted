@@ -1,22 +1,39 @@
+mod events;
+mod server;
+
 use anyhow::{Context, Result};
 use aya::{
     include_bytes_aligned,
-    maps::perf::AsyncPerfEventArray,
+    maps::{HashMap as AyaHashMap, perf::AsyncPerfEventArray},
     programs::KProbe,
     util::online_cpus,
-    Bpf,
+    Ebpf,
 };
-use aya_log::BpfLogger;
+use aya_log::EbpfLogger;
+use busted_types::{AgentIdentity, NetworkEvent};
 use bytes::BytesMut;
-use busted_types::NetworkEvent;
 use clap::Parser;
+use events::ProcessedEvent;
 use log::{info, warn};
-use std::net::IpAddr;
-use tokio::{signal, task};
+use serde::Serialize;
+use std::{
+    collections::HashMap,
+    net::{IpAddr, ToSocketAddrs},
+    sync::{Arc, OnceLock},
+};
+use tokio::{
+    signal,
+    sync::{broadcast, Mutex},
+    task,
+};
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Parser)]
 #[command(name = "busted")]
-#[command(about = "eBPF-based LLM/AI communication monitoring and identity management", long_about = None)]
+#[command(about = "eBPF-based LLM/AI communication monitoring and identity management")]
 struct Cli {
     /// Verbose output
     #[arg(short, long)]
@@ -26,23 +43,217 @@ struct Cli {
     #[arg(short, long, default_value = "text")]
     format: String,
 
-    /// Enable policy enforcement (blocking)
+    /// Enable policy enforcement (audit mode)
     #[arg(short, long)]
     enforce: bool,
 }
+
+// ---------------------------------------------------------------------------
+// LLM provider classification (Phase 2)
+// ---------------------------------------------------------------------------
+
+const LLM_ENDPOINTS: &[(&str, &str)] = &[
+    ("api.openai.com", "OpenAI"),
+    ("api.anthropic.com", "Anthropic"),
+    ("generativelanguage.googleapis.com", "Google"),
+    ("aiplatform.googleapis.com", "Google"),
+    ("openai.azure.com", "Azure"),
+    ("cognitiveservices.azure.com", "Azure"),
+    ("bedrock-runtime.us-east-1.amazonaws.com", "AWS Bedrock"),
+    ("bedrock-runtime.us-west-2.amazonaws.com", "AWS Bedrock"),
+    ("api.cohere.ai", "Cohere"),
+    ("api-inference.huggingface.co", "HuggingFace"),
+];
+
+static PROVIDER_MAP: OnceLock<HashMap<IpAddr, &'static str>> = OnceLock::new();
+
+fn init_provider_map() {
+    let map = PROVIDER_MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        for &(hostname, provider) in LLM_ENDPOINTS {
+            let addr = format!("{}:443", hostname);
+            match addr.to_socket_addrs() {
+                Ok(addrs) => {
+                    for a in addrs {
+                        m.insert(a.ip(), provider);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to resolve {}: {}", hostname, e);
+                }
+            }
+        }
+        info!("Resolved {} LLM provider IPs", m.len());
+        m
+    });
+    let _ = map;
+}
+
+fn classify_llm_provider(ip: &IpAddr, dport: u16) -> Option<&'static str> {
+    if dport != 443 {
+        return None;
+    }
+    PROVIDER_MAP.get().and_then(|m| m.get(ip).copied())
+}
+
+// ---------------------------------------------------------------------------
+// Structured output (Phase 4)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct EventOutput {
+    event_type: String,
+    timestamp: String,
+    pid: u32,
+    uid: u32,
+    process_name: String,
+    src_ip: String,
+    src_port: u16,
+    dst_ip: String,
+    dst_port: u16,
+    bytes: u64,
+    provider: Option<String>,
+    policy: Option<String>,
+    container_id: String,
+}
+
+impl From<&ProcessedEvent> for EventOutput {
+    fn from(e: &ProcessedEvent) -> Self {
+        EventOutput {
+            event_type: e.event_type.clone(),
+            timestamp: e.timestamp.clone(),
+            pid: e.pid,
+            uid: e.uid,
+            process_name: e.process_name.clone(),
+            src_ip: e.src_ip.clone(),
+            src_port: e.src_port,
+            dst_ip: e.dst_ip.clone(),
+            dst_port: e.dst_port,
+            bytes: e.bytes,
+            provider: e.provider.clone(),
+            policy: e.policy.clone(),
+            container_id: e.container_id.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event handling (Phase 3 + 4 + 5)
+// ---------------------------------------------------------------------------
+
+async fn handle_event(
+    event: NetworkEvent,
+    tx: &broadcast::Sender<ProcessedEvent>,
+    identity_map: &Arc<Mutex<AyaHashMap<aya::maps::MapData, u32, AgentIdentity>>>,
+    policy_map: &Arc<Mutex<AyaHashMap<aya::maps::MapData, u32, u8>>>,
+    enforce: bool,
+) {
+    let dst_ip = event.dest_ip();
+
+    let provider = classify_llm_provider(&dst_ip, event.dport);
+
+    let policy_str = if provider.is_some() && enforce {
+        // Audit mode: log but allow (kprobes can't block traffic)
+        if let Ok(mut pmap) = policy_map.try_lock() {
+            // Write audit decision (2 = Audit)
+            let _ = pmap.insert(event.pid, 2, 0);
+        }
+        Some("audit")
+    } else {
+        None
+    };
+
+    // Store identity for processes communicating with LLM providers
+    if provider.is_some() {
+        if let Ok(mut imap) = identity_map.try_lock() {
+            let mut identity = AgentIdentity::new();
+            identity.pid = event.pid;
+            identity.uid = event.uid;
+            identity.comm = event.comm;
+            identity.container_id = event.container_id;
+            identity.created_at_ns = event.timestamp_ns;
+            let _ = imap.insert(event.pid, identity, 0);
+        }
+    }
+
+    let processed = ProcessedEvent::from_network_event(&event, provider, policy_str);
+
+    // Send to broadcast channel (for UI and other consumers)
+    let _ = tx.send(processed);
+}
+
+// ---------------------------------------------------------------------------
+// CLI output consumer (Phase 4 + 5)
+// ---------------------------------------------------------------------------
+
+async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format: String) {
+    loop {
+        match rx.recv().await {
+            Ok(event) => match format.as_str() {
+                "json" => {
+                    let output = EventOutput::from(&event);
+                    if let Ok(json) = serde_json::to_string(&output) {
+                        println!("{}", json);
+                    }
+                }
+                _ => {
+                    // text format
+                    if let Some(ref provider) = event.provider {
+                        info!(
+                            "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}",
+                            event.event_type,
+                            event.timestamp,
+                            event.pid,
+                            event.process_name,
+                            event.uid,
+                            event.src_ip,
+                            event.src_port,
+                            event.dst_ip,
+                            event.dst_port,
+                            event.bytes,
+                            provider,
+                            event.policy.as_ref().map(|p| format!(" | Policy: {}", p)).unwrap_or_default(),
+                        );
+                    } else {
+                        log::debug!(
+                            "[{}] PID: {} ({}) | {}:{} -> {}:{} | {} bytes",
+                            event.event_type,
+                            event.pid,
+                            event.process_name,
+                            event.src_ip,
+                            event.src_port,
+                            event.dst_ip,
+                            event.dst_port,
+                            event.bytes,
+                        );
+                    }
+                }
+            },
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!("CLI consumer lagged, dropped {} events", n);
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-        if cli.verbose { "debug" } else { "info" },
-    ))
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" }),
+    )
     .init();
 
-    // Bump the memlock rlimit. This is needed for older kernels that don't use the
-    // new memcg based accounting, see https://lwn.net/Articles/837122/
+    // Resolve LLM provider IPs
+    init_provider_map();
+
+    // Bump memlock rlimit for older kernels
     let rlim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
@@ -52,52 +263,78 @@ async fn main() -> Result<()> {
         warn!("Failed to increase rlimit");
     }
 
-    // Load the eBPF program
+    // Load eBPF program
     #[cfg(debug_assertions)]
-    let mut bpf = Bpf::load(include_bytes_aligned!(
+    let mut bpf = Ebpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/debug/busted-ebpf"
     ))?;
     #[cfg(not(debug_assertions))]
-    let mut bpf = Bpf::load(include_bytes_aligned!(
+    let mut bpf = Ebpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/release/busted-ebpf"
     ))?;
 
-    // Initialize BPF logger
-    if let Err(e) = BpfLogger::init(&mut bpf) {
+    if let Err(e) = EbpfLogger::init(&mut bpf) {
         warn!("Failed to initialize eBPF logger: {}", e);
     }
 
     info!("Loading eBPF programs...");
 
-    // Attach tcp_connect probe
+    // Attach probes
     let program: &mut KProbe = bpf.program_mut("tcp_connect").unwrap().try_into()?;
     program.load()?;
-    program.attach("tcp_connect", 0)
+    program
+        .attach("tcp_connect", 0)
         .context("Failed to attach tcp_connect")?;
     info!("Attached to tcp_connect");
 
-    // Attach tcp_sendmsg probe
     let program: &mut KProbe = bpf.program_mut("tcp_sendmsg").unwrap().try_into()?;
     program.load()?;
-    program.attach("tcp_sendmsg", 0)
+    program
+        .attach("tcp_sendmsg", 0)
         .context("Failed to attach tcp_sendmsg")?;
     info!("Attached to tcp_sendmsg");
 
-    // Attach tcp_recvmsg probe
     let program: &mut KProbe = bpf.program_mut("tcp_recvmsg").unwrap().try_into()?;
     program.load()?;
-    program.attach("tcp_recvmsg", 0)
+    program
+        .attach("tcp_recvmsg", 0)
         .context("Failed to attach tcp_recvmsg")?;
     info!("Attached to tcp_recvmsg");
 
     info!("All eBPF programs loaded successfully");
 
+    // Take BPF maps for identity and policy (Phase 3)
+    let identity_map: AyaHashMap<_, u32, AgentIdentity> =
+        AyaHashMap::try_from(bpf.take_map("AGENT_IDENTITIES").unwrap())?;
+    let identity_map = Arc::new(Mutex::new(identity_map));
+
+    let policy_map: AyaHashMap<_, u32, u8> =
+        AyaHashMap::try_from(bpf.take_map("POLICY_MAP").unwrap())?;
+    let policy_map = Arc::new(Mutex::new(policy_map));
+
+    // Event broadcast channel (Phase 5)
+    let (tx, _) = broadcast::channel::<ProcessedEvent>(4096);
+
+    // Start CLI output consumer
+    let cli_rx = tx.subscribe();
+    let format = cli.format.clone();
+    task::spawn(cli_output_consumer(cli_rx, format));
+
+    // Start Unix socket server for UI (Phase 5b)
+    let server_rx = tx.subscribe();
+    task::spawn(server::run_socket_server(server_rx));
+
     // Get the events perf array
     let mut perf_array = AsyncPerfEventArray::try_from(bpf.take_map("EVENTS").unwrap())?;
 
+    let enforce = cli.enforce;
+
     // Process events from all CPUs
-    for cpu_id in online_cpus()? {
+    for cpu_id in online_cpus().map_err(|(msg, e)| anyhow::anyhow!("{}: {}", msg, e))? {
         let mut buf = perf_array.open(cpu_id, None)?;
+        let tx = tx.clone();
+        let identity_map = identity_map.clone();
+        let policy_map = policy_map.clone();
 
         task::spawn(async move {
             let mut buffers = (0..10)
@@ -109,7 +346,7 @@ async fn main() -> Result<()> {
                 for buf in buffers.iter_mut().take(events.read) {
                     let ptr = buf.as_ptr() as *const NetworkEvent;
                     let event = unsafe { ptr.read_unaligned() };
-                    handle_event(event);
+                    handle_event(event, &tx, &identity_map, &policy_map, enforce).await;
                 }
             }
         });
@@ -120,84 +357,8 @@ async fn main() -> Result<()> {
     signal::ctrl_c().await?;
     info!("Exiting...");
 
+    // Clean up socket file
+    let _ = std::fs::remove_file("/tmp/busted.sock");
+
     Ok(())
-}
-
-/// Handle a network event from eBPF
-fn handle_event(event: NetworkEvent) {
-    let event_type = match event.event_type {
-        1 => "TCP_CONNECT",
-        2 => "DATA_SENT",
-        3 => "DATA_RECEIVED",
-        4 => "CONNECTION_CLOSED",
-        _ => "UNKNOWN",
-    };
-
-    let process_name = event.process_name();
-    let src_ip = event.source_ip();
-    let dst_ip = event.dest_ip();
-
-    // Classify if this looks like LLM traffic
-    let provider = classify_llm_provider(&dst_ip);
-
-    if let Some(provider_name) = provider {
-        info!(
-            "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | Provider: {}",
-            event_type,
-            format_timestamp(event.timestamp_ns),
-            event.pid,
-            process_name,
-            event.uid,
-            src_ip,
-            event.sport,
-            dst_ip,
-            event.dport,
-            provider_name
-        );
-
-        // TODO: Apply policy enforcement here
-        // TODO: Store identity mapping
-        // TODO: Emit structured logs/metrics
-    } else {
-        // Non-LLM traffic - can be filtered or logged at debug level
-        log::debug!(
-            "[{}] PID: {} ({}) | {}:{} -> {}:{}",
-            event_type,
-            event.pid,
-            process_name,
-            src_ip,
-            event.sport,
-            dst_ip,
-            event.dport
-        );
-    }
-}
-
-/// Classify LLM provider based on destination IP
-fn classify_llm_provider(ip: &IpAddr) -> Option<&'static str> {
-    // TODO: Implement proper IP range matching
-    // For now, this is a placeholder
-    // In production, you'd maintain maps of known LLM provider IP ranges
-    // and update them periodically
-
-    // This would typically involve:
-    // 1. DNS resolution of known LLM endpoints
-    // 2. ASN lookups
-    // 3. Periodic updates from cloud provider IP ranges
-    // 4. Machine learning classification based on traffic patterns
-
-    None
-}
-
-/// Format timestamp from nanoseconds
-fn format_timestamp(ns: u64) -> String {
-    let secs = ns / 1_000_000_000;
-    let subsec_ns = (ns % 1_000_000_000) as u32;
-
-    use std::time::{SystemTime, UNIX_EPOCH, Duration};
-    let duration = Duration::new(secs, subsec_ns);
-    let datetime = UNIX_EPOCH + duration;
-
-    // Simple formatting - in production you'd use chrono
-    format!("{:?}", datetime)
 }

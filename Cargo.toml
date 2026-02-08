@@ -4,6 +4,14 @@ members = [
     "busted-types",
     "busted-ebpf",
     "busted-agent",
+    "busted-ui",
+    "xtask",
+]
+# busted-ebpf must be built separately for bpfel-unknown-none via `cargo xtask build`
+default-members = [
+    "busted-types",
+    "busted-agent",
+    "busted-ui",
     "xtask",
 ]
 

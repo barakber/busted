@@ -7,10 +7,11 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+aya = { version = "0.13", optional = true, default-features = false }
 
 [features]
 default = []
-user = []
+user = ["aya"]
 
 [lib]
 path = "src/lib.rs"

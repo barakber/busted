@@ -170,6 +170,14 @@ pub enum PolicyDecision {
 }
 
 #[cfg(feature = "user")]
+mod pod_impls {
+    use super::*;
+    // SAFETY: All types are #[repr(C)], Copy, and contain only primitive/array fields.
+    unsafe impl aya::Pod for NetworkEvent {}
+    unsafe impl aya::Pod for AgentIdentity {}
+}
+
+#[cfg(feature = "user")]
 pub mod userspace {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

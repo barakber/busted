@@ -22,5 +22,6 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bytes = "1.5"
+libc = "0.2.180"
 
 [build-dependencies]
