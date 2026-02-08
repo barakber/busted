@@ -1,0 +1,22 @@
+[package]
+name = "busted-classifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+nom = "7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+regex = { version = "1", optional = true }
+once_cell = "1"
+
+[dev-dependencies]
+proptest = "1"
+
+[features]
+default = []
+pii = ["dep:regex"]

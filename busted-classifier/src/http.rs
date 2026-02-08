@@ -1,0 +1,271 @@
+use nom::{
+    bytes::complete::{tag, take_while1},
+    character::complete::{char, space1},
+    combinator::opt,
+    sequence::tuple,
+    IResult,
+};
+use std::collections::HashMap;
+
+/// Parsed HTTP/1.1 request.
+#[derive(Debug, Clone)]
+pub struct HttpRequestInfo {
+    pub method: String,
+    pub path: String,
+    pub version: String,
+    pub headers: HashMap<String, String>,
+    pub body_offset: Option<usize>,
+}
+
+/// Parsed HTTP/1.1 response.
+#[derive(Debug, Clone)]
+pub struct HttpResponseInfo {
+    pub version: String,
+    pub status_code: u16,
+    pub reason: String,
+    pub headers: HashMap<String, String>,
+    pub body_offset: Option<usize>,
+}
+
+/// Headers we extract for classification.
+const INTERESTING_HEADERS: &[&str] = &[
+    "host",
+    "content-type",
+    "user-agent",
+    "authorization",
+    "x-api-key",
+    "anthropic-version",
+    "openai-organization",
+    "accept",
+];
+
+/// Quick check: does this look like an HTTP/2 binary frame?
+pub fn is_http2_binary(data: &[u8]) -> bool {
+    // HTTP/2 connection preface
+    if data.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
+        return true;
+    }
+    // HTTP/2 frame: 3-byte length + 1-byte type + 1-byte flags + 4-byte stream ID
+    // Type values 0-9 are defined; length is reasonable
+    if data.len() >= 9 {
+        let len = ((data[0] as u32) << 16) | ((data[1] as u32) << 8) | (data[2] as u32);
+        let frame_type = data[3];
+        // Valid frame types: DATA(0)..CONTINUATION(9)
+        if frame_type <= 9 && len < 16_777_216 && len > 0 {
+            // Heuristic: if the high bit of byte 5-8 is clear (stream ID is 31 bits)
+            if data[5] & 0x80 == 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Quick check: does this look like the start of an HTTP request?
+pub fn looks_like_http_request(data: &[u8]) -> bool {
+    const METHODS: &[&[u8]] = &[
+        b"GET ", b"POST ", b"PUT ", b"DELETE ", b"PATCH ", b"HEAD ", b"OPTIONS ", b"CONNECT ",
+    ];
+    for m in METHODS {
+        if data.starts_with(m) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Quick check: does this look like the start of an HTTP response?
+pub fn looks_like_http_response(data: &[u8]) -> bool {
+    data.starts_with(b"HTTP/1.0 ") || data.starts_with(b"HTTP/1.1 ")
+}
+
+fn is_token_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&c)
+}
+
+fn parse_method(input: &[u8]) -> IResult<&[u8], &[u8]> {
+    take_while1(|c: u8| c.is_ascii_uppercase())(input)
+}
+
+fn parse_request_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8], &[u8])> {
+    let (input, method) = parse_method(input)?;
+    let (input, _) = space1(input)?;
+    let (input, path) = take_while1(|c: u8| c != b' ' && c != b'\r' && c != b'\n')(input)?;
+    let (input, _) = space1(input)?;
+    let (input, version) = take_while1(|c: u8| c != b'\r' && c != b'\n')(input)?;
+    let (input, _) = tag(b"\r\n")(input)?;
+    Ok((input, (method, path, version)))
+}
+
+fn parse_status_line(input: &[u8]) -> IResult<&[u8], (&[u8], u16, &[u8])> {
+    let (input, version) = take_while1(|c: u8| c != b' ' && c != b'\r')(input)?;
+    let (input, _) = space1(input)?;
+    let (input, code_bytes) = take_while1(|c: u8| c.is_ascii_digit())(input)?;
+    let code: u16 = std::str::from_utf8(code_bytes)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let (input, _) = opt(space1)(input)?;
+    // Reason phrase is optional and runs to CRLF
+    let (input, reason) = take_while1::<_, _, nom::error::Error<&[u8]>>(|c: u8| c != b'\r' && c != b'\n')(input)
+        .unwrap_or((input, b"" as &[u8]));
+    let (input, _) = tag(b"\r\n")(input)?;
+    Ok((input, (version, code, reason)))
+}
+
+fn parse_header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
+    let (input, name) = take_while1(is_token_char)(input)?;
+    let (input, _) = tuple((char(':'), opt(space1)))(input)?;
+    let (input, value) = take_while1(|c: u8| c != b'\r' && c != b'\n')(input)?;
+    let (input, _) = tag(b"\r\n")(input)?;
+    Ok((input, (name, value)))
+}
+
+/// Returns (headers, remaining_body, headers_complete).
+/// `headers_complete` is true if the `\r\n\r\n` terminator was found.
+fn parse_headers(mut input: &[u8]) -> (HashMap<String, String>, &[u8], bool) {
+    let mut headers = HashMap::new();
+
+    loop {
+        // Check for end of headers
+        if input.starts_with(b"\r\n") {
+            return (headers, &input[2..], true);
+        }
+        if input.is_empty() {
+            // Truncated before end of headers
+            return (headers, input, false);
+        }
+
+        match parse_header(input) {
+            Ok((rest, (name, value))) => {
+                let name_str = String::from_utf8_lossy(name).to_lowercase();
+                // Only store interesting headers
+                if INTERESTING_HEADERS.contains(&name_str.as_str()) {
+                    let val = String::from_utf8_lossy(value).to_string();
+                    // Mask authorization values for security
+                    let val = if name_str == "authorization" {
+                        mask_auth(&val)
+                    } else if name_str == "x-api-key" {
+                        "[present]".to_string()
+                    } else {
+                        val
+                    };
+                    headers.insert(name_str, val);
+                }
+                input = rest;
+            }
+            Err(_) => {
+                // Truncated or malformed header — stop parsing
+                return (headers, input, false);
+            }
+        }
+    }
+}
+
+fn mask_auth(val: &str) -> String {
+    if val.len() > 12 {
+        format!("{}...{}", &val[..8], &val[val.len() - 4..])
+    } else {
+        "[redacted]".to_string()
+    }
+}
+
+/// Try to parse an HTTP/1.1 request from raw bytes.
+/// Handles truncated payloads gracefully.
+pub fn parse_request(data: &[u8]) -> Option<HttpRequestInfo> {
+    let (rest, (method, path, version)) = parse_request_line(data).ok()?;
+    let (headers, body, headers_complete) = parse_headers(rest);
+
+    let body_offset = if headers_complete {
+        Some(data.len() - body.len())
+    } else {
+        None
+    };
+
+    Some(HttpRequestInfo {
+        method: String::from_utf8_lossy(method).to_string(),
+        path: String::from_utf8_lossy(path).to_string(),
+        version: String::from_utf8_lossy(version).to_string(),
+        headers,
+        body_offset,
+    })
+}
+
+/// Try to parse an HTTP/1.1 response from raw bytes.
+pub fn parse_response(data: &[u8]) -> Option<HttpResponseInfo> {
+    let (rest, (version, status_code, reason)) = parse_status_line(data).ok()?;
+    let (headers, body, headers_complete) = parse_headers(rest);
+
+    let body_offset = if headers_complete {
+        Some(data.len() - body.len())
+    } else {
+        None
+    };
+
+    Some(HttpResponseInfo {
+        version: String::from_utf8_lossy(version).to_string(),
+        status_code,
+        reason: String::from_utf8_lossy(reason).to_string(),
+        headers,
+        body_offset,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_request() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nContent-Type: application/json\r\nAuthorization: Bearer sk-1234567890abcdef\r\nUser-Agent: openai-python/1.12.0\r\n\r\n{\"model\":\"gpt-4\"}";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/v1/chat/completions");
+        assert_eq!(req.headers.get("host").unwrap(), "api.openai.com");
+        assert_eq!(
+            req.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+        assert!(req.headers.get("authorization").unwrap().contains("..."));
+        assert_eq!(
+            req.headers.get("user-agent").unwrap(),
+            "openai-python/1.12.0"
+        );
+        assert!(req.body_offset.is_some());
+    }
+
+    #[test]
+    fn test_parse_response() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\":\"chatcmpl-123\"}";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(resp.reason, "OK");
+        assert!(resp.body_offset.is_some());
+    }
+
+    #[test]
+    fn test_truncated_headers() {
+        let raw = b"POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nContent-Ty";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.headers.get("host").unwrap(), "api.anthropic.com");
+        assert!(req.body_offset.is_none());
+    }
+
+    #[test]
+    fn test_http2_detection() {
+        assert!(is_http2_binary(
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+        ));
+        assert!(!is_http2_binary(b"GET / HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn test_quick_checks() {
+        assert!(looks_like_http_request(b"POST /v1/chat HTTP/1.1\r\n"));
+        assert!(looks_like_http_request(b"GET / HTTP/1.1\r\n"));
+        assert!(!looks_like_http_request(b"{\"jsonrpc\":\"2.0\"}"));
+        assert!(looks_like_http_response(b"HTTP/1.1 200 OK\r\n"));
+        assert!(!looks_like_http_response(b"POST / HTTP/1.1\r\n"));
+    }
+}
