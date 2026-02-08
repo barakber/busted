@@ -47,27 +47,19 @@ fn get_cgroup_info(event: &mut NetworkEvent) {
 
 /// Read socket info from a `struct sock *` pointer.
 ///
-/// Uses stable sock_common field offsets (Linux 5.4+):
+/// Uses stable sock_common field offsets (Linux 5.4+, x86_64):
 ///   0: skc_daddr (u32) - destination IPv4, network byte order
 ///   4: skc_rcv_saddr (u32) - source IPv4, network byte order
 ///  12: skc_dport (u16) - destination port, network byte order
 ///  14: skc_num (u16) - source port, host byte order
 ///  16: skc_family (u16) - AF_INET=2, AF_INET6=10
+///  56: skc_v6_daddr (16 bytes) - destination IPv6
+///  72: skc_v6_rcv_saddr (16 bytes) - source IPv6
 #[inline(always)]
 fn read_sock_info(sock_ptr: *const u8, event: &mut NetworkEvent) {
     // Read address family
     if let Ok(family) = unsafe { bpf_probe_read_kernel(sock_ptr.add(16) as *const u16) } {
         event.family = family;
-    }
-
-    // Read destination IPv4 address (network byte order)
-    if let Ok(daddr) = unsafe { bpf_probe_read_kernel(sock_ptr as *const u32) } {
-        event.daddr.ipv4 = daddr;
-    }
-
-    // Read source IPv4 address (network byte order)
-    if let Ok(saddr) = unsafe { bpf_probe_read_kernel(sock_ptr.add(4) as *const u32) } {
-        event.saddr.ipv4 = saddr;
     }
 
     // Read destination port (network byte order -> convert to host)
@@ -78,6 +70,24 @@ fn read_sock_info(sock_ptr: *const u8, event: &mut NetworkEvent) {
     // Read source port (already in host byte order)
     if let Ok(sport) = unsafe { bpf_probe_read_kernel(sock_ptr.add(14) as *const u16) } {
         event.sport = sport;
+    }
+
+    if event.family == 10 {
+        // AF_INET6: read 16-byte IPv6 addresses
+        if let Ok(daddr) = unsafe { bpf_probe_read_kernel(sock_ptr.add(56) as *const [u8; 16]) } {
+            event.daddr.ipv6 = daddr;
+        }
+        if let Ok(saddr) = unsafe { bpf_probe_read_kernel(sock_ptr.add(72) as *const [u8; 16]) } {
+            event.saddr.ipv6 = saddr;
+        }
+    } else {
+        // AF_INET: read 4-byte IPv4 addresses
+        if let Ok(daddr) = unsafe { bpf_probe_read_kernel(sock_ptr as *const u32) } {
+            event.daddr.ipv4 = daddr;
+        }
+        if let Ok(saddr) = unsafe { bpf_probe_read_kernel(sock_ptr.add(4) as *const u32) } {
+            event.saddr.ipv4 = saddr;
+        }
     }
 }
 

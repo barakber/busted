@@ -65,6 +65,25 @@ const LLM_ENDPOINTS: &[(&str, &str)] = &[
     ("api-inference.huggingface.co", "HuggingFace"),
 ];
 
+/// Known subnet prefixes for LLM providers (covers CDN/anycast rotation).
+/// Format: (first 2 octets as u16, provider name)
+const LLM_SUBNETS: &[([u8; 2], &str)] = &[
+    // Anthropic (160.79.x.x)
+    ([160, 79], "Anthropic"),
+    // Cloudflare ranges used by OpenAI (104.18.x.x, 172.66.x.x, 162.159.x.x)
+    ([104, 18], "OpenAI"),
+    ([172, 66], "OpenAI"),
+    ([162, 159], "OpenAI"),
+];
+
+/// Known /32 IPv6 prefixes for LLM providers.
+const LLM_SUBNETS_V6: &[([u8; 4], &str)] = &[
+    // Anthropic 2607:6bc0::/32
+    ([0x26, 0x07, 0x6b, 0xc0], "Anthropic"),
+    // Google Cloud 2600:1901::/32 (used by Anthropic infrastructure)
+    ([0x26, 0x00, 0x19, 0x01], "Anthropic"),
+];
+
 static PROVIDER_MAP: OnceLock<HashMap<IpAddr, &'static str>> = OnceLock::new();
 
 fn init_provider_map() {
@@ -75,6 +94,7 @@ fn init_provider_map() {
             match addr.to_socket_addrs() {
                 Ok(addrs) => {
                     for a in addrs {
+                        info!("  {} -> {} ({})", hostname, a.ip(), provider);
                         m.insert(a.ip(), provider);
                     }
                 }
@@ -93,7 +113,37 @@ fn classify_llm_provider(ip: &IpAddr, dport: u16) -> Option<&'static str> {
     if dport != 443 {
         return None;
     }
-    PROVIDER_MAP.get().and_then(|m| m.get(ip).copied())
+
+    // 1. Exact IP match from DNS resolution
+    if let Some(provider) = PROVIDER_MAP.get().and_then(|m| m.get(ip).copied()) {
+        return Some(provider);
+    }
+
+    // 2. Subnet prefix match for CDN/anycast ranges
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            for &(prefix, provider) in LLM_SUBNETS {
+                if octets[0] == prefix[0] && octets[1] == prefix[1] {
+                    return Some(provider);
+                }
+            }
+        }
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            for &(prefix, provider) in LLM_SUBNETS_V6 {
+                if octets[0] == prefix[0]
+                    && octets[1] == prefix[1]
+                    && octets[2] == prefix[2]
+                    && octets[3] == prefix[3]
+                {
+                    return Some(provider);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------

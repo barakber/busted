@@ -9,6 +9,5 @@ run = "xtask run"
 
 [target.bpfel-unknown-none]
 rustflags = [
-    "-C", "link-arg=--emit=llvm-bc",
     "-C", "debuginfo=2",
 ]
