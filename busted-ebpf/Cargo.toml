@@ -1,0 +1,18 @@
+[package]
+name = "busted-ebpf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+aya-ebpf.workspace = true
+aya-log-ebpf.workspace = true
+busted-types = { path = "../busted-types" }
+
+[build-dependencies]
+
+[[bin]]
+name = "busted-ebpf"
+path = "src/main.rs"

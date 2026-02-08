@@ -1,0 +1,26 @@
+[package]
+name = "busted-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "busted"
+path = "src/main.rs"
+
+[dependencies]
+aya = { workspace = true }
+aya-log = { workspace = true }
+busted-types = { path = "../busted-types", features = ["user"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = "1.5"
+
+[build-dependencies]

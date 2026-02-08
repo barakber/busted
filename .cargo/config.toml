@@ -1,0 +1,14 @@
+[build]
+target-dir = "target"
+
+[alias]
+xtask = "run --package xtask --"
+build-ebpf = "xtask build-ebpf"
+build = "xtask build"
+run = "xtask run"
+
+[target.bpfel-unknown-none]
+rustflags = [
+    "-C", "link-arg=--emit=llvm-bc",
+    "-C", "debuginfo=2",
+]
