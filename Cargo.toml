@@ -4,6 +4,8 @@ members = [
     "busted-types",
     "busted-ebpf",
     "busted-agent",
+    "busted-classifier",
+    "busted-ml",
     "busted-ui",
     "xtask",
 ]
@@ -11,6 +13,8 @@ members = [
 default-members = [
     "busted-types",
     "busted-agent",
+    "busted-classifier",
+    "busted-ml",
     "busted-ui",
     "xtask",
 ]

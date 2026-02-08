@@ -1,0 +1,17 @@
+[package]
+name = "busted-ml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+busted-types = { path = "../busted-types", features = ["user"] }
+ndarray = "0.15"
+linfa = "0.7"
+linfa-trees = "0.7"
+hdbscan = "0.12"
+rand = "0.8"
+log = { workspace = true }
+serde = { workspace = true }

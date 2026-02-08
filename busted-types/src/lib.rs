@@ -297,6 +297,76 @@ mod pod_impls {
 }
 
 #[cfg(feature = "user")]
+pub mod processed {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ProcessedEvent {
+        pub event_type: String,
+        pub timestamp: String,
+        pub pid: u32,
+        pub uid: u32,
+        pub process_name: String,
+        pub src_ip: String,
+        pub src_port: u16,
+        pub dst_ip: String,
+        pub dst_port: u16,
+        pub bytes: u64,
+        pub provider: Option<String>,
+        pub policy: Option<String>,
+        pub container_id: String,
+        #[serde(default)]
+        pub cgroup_id: u64,
+        #[serde(default)]
+        pub request_rate: Option<f64>,
+        #[serde(default)]
+        pub session_bytes: Option<u64>,
+        #[serde(default)]
+        pub pod_name: Option<String>,
+        #[serde(default)]
+        pub pod_namespace: Option<String>,
+        #[serde(default)]
+        pub service_account: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ml_confidence: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ml_provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub behavior_class: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub cluster_id: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sni: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tls_protocol: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tls_details: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tls_payload: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub content_class: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_provider: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_endpoint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mcp_method: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mcp_category: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent_sdk: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent_fingerprint: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub classifier_confidence: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub pii_detected: Option<bool>,
+    }
+}
+
+#[cfg(feature = "user")]
 pub mod userspace {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

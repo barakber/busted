@@ -1,125 +1,129 @@
-use busted_types::{NetworkEvent, TlsDataEvent};
-use serde::Serialize;
+use busted_types::processed::ProcessedEvent;
+use busted_types::NetworkEvent;
+#[cfg(feature = "tls")]
+use busted_types::TlsDataEvent;
 
-#[derive(Clone, Debug, Serialize)]
-pub struct ProcessedEvent {
-    pub event_type: String,
-    pub timestamp: String,
-    pub pid: u32,
-    pub uid: u32,
-    pub process_name: String,
-    pub src_ip: String,
-    pub src_port: u16,
-    pub dst_ip: String,
-    pub dst_port: u16,
-    pub bytes: u64,
-    pub provider: Option<String>,
-    pub policy: Option<String>,
-    pub container_id: String,
-    pub cgroup_id: u64,
-    pub request_rate: Option<f64>,
-    pub session_bytes: Option<u64>,
-    pub pod_name: Option<String>,
-    pub pod_namespace: Option<String>,
-    pub service_account: Option<String>,
-    #[cfg(feature = "ml")]
-    pub behavior: Option<crate::ml::BehaviorIdentity>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sni: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls_protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls_details: Option<String>,
-    /// Raw decrypted TLS payload (lossy UTF-8)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tls_payload: Option<String>,
+pub fn from_network_event(
+    event: &NetworkEvent,
+    provider: Option<&str>,
+    policy: Option<&str>,
+) -> ProcessedEvent {
+    let event_type = match event.event_type {
+        1 => "TCP_CONNECT",
+        2 => "DATA_SENT",
+        3 => "DATA_RECEIVED",
+        4 => "CONNECTION_CLOSED",
+        5 => "DNS_QUERY",
+        _ => "UNKNOWN",
+    };
+
+    ProcessedEvent {
+        event_type: event_type.to_string(),
+        timestamp: format_timestamp(event.timestamp_ns),
+        pid: event.pid,
+        uid: event.uid,
+        process_name: event.process_name().to_string(),
+        src_ip: event.source_ip().to_string(),
+        src_port: event.sport,
+        dst_ip: event.dest_ip().to_string(),
+        dst_port: event.dport,
+        bytes: event.bytes,
+        provider: provider.map(|s| s.to_string()),
+        policy: policy.map(|s| s.to_string()),
+        container_id: event.container_id_str().to_string(),
+        cgroup_id: event.cgroup_id,
+        request_rate: None,
+        session_bytes: None,
+        pod_name: None,
+        pod_namespace: None,
+        service_account: None,
+        ml_confidence: None,
+        ml_provider: None,
+        behavior_class: None,
+        cluster_id: None,
+        sni: None,
+        tls_protocol: None,
+        tls_details: None,
+        tls_payload: None,
+        content_class: None,
+        llm_provider: None,
+        llm_endpoint: None,
+        llm_model: None,
+        mcp_method: None,
+        mcp_category: None,
+        agent_sdk: None,
+        agent_fingerprint: None,
+        classifier_confidence: None,
+        pii_detected: None,
+    }
 }
 
-impl ProcessedEvent {
-    pub fn from_network_event(
-        event: &NetworkEvent,
-        provider: Option<&str>,
-        policy: Option<&str>,
-    ) -> Self {
-        let event_type = match event.event_type {
-            1 => "TCP_CONNECT",
-            2 => "DATA_SENT",
-            3 => "DATA_RECEIVED",
-            4 => "CONNECTION_CLOSED",
-            5 => "DNS_QUERY",
-            _ => "UNKNOWN",
-        };
+/// Create a ProcessedEvent from a TLS data capture event with classification.
+#[cfg(feature = "tls")]
+pub fn from_tls_data_event(
+    event: &TlsDataEvent,
+    classification: &busted_classifier::Classification,
+) -> ProcessedEvent {
+    let event_type = match event.event_type {
+        7 => "TLS_DATA_WRITE",
+        8 => "TLS_DATA_READ",
+        _ => "UNKNOWN",
+    };
 
-        ProcessedEvent {
-            event_type: event_type.to_string(),
-            timestamp: format_timestamp(event.timestamp_ns),
-            pid: event.pid,
-            uid: event.uid,
-            process_name: event.process_name().to_string(),
-            src_ip: event.source_ip().to_string(),
-            src_port: event.sport,
-            dst_ip: event.dest_ip().to_string(),
-            dst_port: event.dport,
-            bytes: event.bytes,
-            provider: provider.map(|s| s.to_string()),
-            policy: policy.map(|s| s.to_string()),
-            container_id: event.container_id_str().to_string(),
-            cgroup_id: event.cgroup_id,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            #[cfg(feature = "ml")]
-            behavior: None,
-            sni: None,
-            tls_protocol: None,
-            tls_details: None,
-            tls_payload: None,
+    let payload = String::from_utf8_lossy(event.payload_bytes()).to_string();
+
+    let tls_protocol = classification.content_class_str().map(|s| s.to_string());
+    let tls_details = classification.provider().map(|p| {
+        let mut detail = p.to_string();
+        if let Some(ep) = classification.endpoint() {
+            detail.push_str(&format!(" ({})", ep));
         }
-    }
-
-    /// Create a ProcessedEvent from a TLS data capture event.
-    pub fn from_tls_data_event(
-        event: &TlsDataEvent,
-        protocol: Option<String>,
-        details: Option<String>,
-    ) -> Self {
-        let event_type = match event.event_type {
-            7 => "TLS_DATA_WRITE",
-            8 => "TLS_DATA_READ",
-            _ => "UNKNOWN",
-        };
-
-        let payload = String::from_utf8_lossy(event.payload_bytes()).to_string();
-
-        ProcessedEvent {
-            event_type: event_type.to_string(),
-            timestamp: format_timestamp(event.timestamp_ns),
-            pid: event.pid,
-            uid: 0,
-            process_name: event.process_name().to_string(),
-            src_ip: String::new(),
-            src_port: 0,
-            dst_ip: String::new(),
-            dst_port: 0,
-            bytes: event.payload_len as u64,
-            provider: protocol.clone(),
-            policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            #[cfg(feature = "ml")]
-            behavior: None,
-            sni: None,
-            tls_protocol: protocol,
-            tls_details: details,
-            tls_payload: Some(payload),
+        if let Some(m) = classification.model() {
+            detail.push_str(&format!(" model={}", m));
         }
+        detail
+    }).or_else(|| {
+        classification.mcp_method().map(|m| format!("MCP {}", m))
+    });
+
+    ProcessedEvent {
+        event_type: event_type.to_string(),
+        timestamp: format_timestamp(event.timestamp_ns),
+        pid: event.pid,
+        uid: 0,
+        process_name: event.process_name().to_string(),
+        src_ip: String::new(),
+        src_port: 0,
+        dst_ip: String::new(),
+        dst_port: 0,
+        bytes: event.payload_len as u64,
+        provider: classification.provider().map(|s| s.to_string()),
+        policy: None,
+        container_id: String::new(),
+        cgroup_id: 0,
+        request_rate: None,
+        session_bytes: None,
+        pod_name: None,
+        pod_namespace: None,
+        service_account: None,
+        ml_confidence: None,
+        ml_provider: None,
+        behavior_class: None,
+        cluster_id: None,
+        sni: None,
+        tls_protocol,
+        tls_details,
+        tls_payload: Some(payload),
+        content_class: classification.content_class_str().map(|s| s.to_string()),
+        llm_provider: classification.provider().map(|s| s.to_string()),
+        llm_endpoint: classification.endpoint().map(|s| s.to_string()),
+        llm_model: classification.model().map(|s| s.to_string()),
+        mcp_method: classification.mcp_method().map(|s| s.to_string()),
+        mcp_category: classification.mcp_category_str(),
+        agent_sdk: classification.sdk_string(),
+        agent_fingerprint: classification.signature_hash(),
+        classifier_confidence: Some(classification.confidence),
+        pii_detected: Some(classification.pii_flags.any()),
     }
 }
 

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use ndarray::Array1;
 
-use super::symbol::SYMBOL_SPACE;
-use super::window::EventWindow;
+use crate::symbol::SYMBOL_SPACE;
+use crate::window::EventWindow;
 
 /// Total feature vector dimensionality.
 ///

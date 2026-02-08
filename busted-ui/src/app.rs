@@ -1,52 +1,7 @@
 use crate::views;
-use serde::Deserialize;
+use busted_types::processed::ProcessedEvent;
 use std::collections::HashMap;
 use std::sync::mpsc;
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ProcessedEvent {
-    pub event_type: String,
-    pub timestamp: String,
-    pub pid: u32,
-    pub uid: u32,
-    pub process_name: String,
-    pub src_ip: String,
-    pub src_port: u16,
-    pub dst_ip: String,
-    pub dst_port: u16,
-    pub bytes: u64,
-    pub provider: Option<String>,
-    pub policy: Option<String>,
-    pub container_id: String,
-    #[serde(default)]
-    pub cgroup_id: u64,
-    #[serde(default)]
-    pub request_rate: Option<f64>,
-    #[serde(default)]
-    pub session_bytes: Option<u64>,
-    #[serde(default)]
-    pub pod_name: Option<String>,
-    #[serde(default)]
-    pub pod_namespace: Option<String>,
-    #[serde(default)]
-    pub service_account: Option<String>,
-    #[serde(default)]
-    pub ml_confidence: Option<f64>,
-    #[serde(default)]
-    pub ml_provider: Option<String>,
-    #[serde(default)]
-    pub behavior_class: Option<String>,
-    #[serde(default)]
-    pub cluster_id: Option<i32>,
-    #[serde(default)]
-    pub sni: Option<String>,
-    #[serde(default)]
-    pub tls_protocol: Option<String>,
-    #[serde(default)]
-    pub tls_details: Option<String>,
-    #[serde(default)]
-    pub tls_payload: Option<String>,
-}
 
 #[derive(Clone, Debug)]
 pub struct ProviderStats {
@@ -79,6 +34,7 @@ pub struct BustedApp {
     pub tab: Tab,
     pub paused: bool,
     pub connected: bool,
+    pub demo_mode: bool,
     pub filter_provider: String,
     pub filter_process: String,
     pub filter_event_type: String,
@@ -99,13 +55,14 @@ pub struct PolicyRule {
 }
 
 impl BustedApp {
-    pub fn new(rx: mpsc::Receiver<ProcessedEvent>) -> Self {
+    pub fn new(rx: mpsc::Receiver<ProcessedEvent>, demo_mode: bool) -> Self {
         Self {
             rx,
             events: Vec::new(),
             tab: Tab::LiveEvents,
             paused: false,
             connected: false,
+            demo_mode,
             filter_provider: String::new(),
             filter_process: String::new(),
             filter_event_type: String::new(),
@@ -180,7 +137,9 @@ impl eframe::App for BustedApp {
         // Top panel - status bar
         egui::TopBottomPanel::top("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let status = if self.connected {
+                let status = if self.demo_mode {
+                    "Demo Mode"
+                } else if self.connected {
                     "Connected"
                 } else {
                     "Disconnected"

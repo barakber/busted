@@ -1,4 +1,4 @@
-use crate::events::ProcessedEvent;
+use busted_types::processed::ProcessedEvent;
 use log::{info, warn};
 use std::path::PathBuf;
 use tokio::sync::broadcast;

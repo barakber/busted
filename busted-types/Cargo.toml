@@ -8,10 +8,11 @@ repository.workspace = true
 
 [dependencies]
 aya = { version = "0.13", optional = true, default-features = false }
+serde = { version = "1.0", features = ["derive"], optional = true }
 
 [features]
 default = []
-user = ["aya"]
+user = ["aya", "serde"]
 
 [lib]
 path = "src/lib.rs"

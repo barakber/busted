@@ -6,9 +6,9 @@ use ndarray::{Array1, Array2, Axis};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
-use super::features::FEATURE_DIM;
+use crate::features::FEATURE_DIM;
 
-/// Maps string labels ↔ integer indices for the classifier.
+/// Maps string labels <-> integer indices for the classifier.
 pub struct LabelEncoder {
     label_to_idx: HashMap<String, usize>,
     idx_to_label: Vec<String>,

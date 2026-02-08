@@ -2,7 +2,9 @@ mod events;
 #[cfg(feature = "k8s")]
 mod k8s;
 #[cfg(feature = "ml")]
-pub(crate) mod ml;
+use busted_ml as ml;
+#[cfg(feature = "prometheus")]
+mod metrics;
 mod server;
 mod siem;
 #[cfg(feature = "tls")]
@@ -22,7 +24,7 @@ use busted_types::{AgentIdentity, NetworkEvent};
 #[cfg(feature = "tls")]
 use busted_types::{TlsConnKey, TlsDataEvent, TlsHandshakeEvent};
 use clap::Parser;
-use events::ProcessedEvent;
+use busted_types::processed::ProcessedEvent;
 use log::{debug, info, warn};
 use regex::Regex;
 use serde::Serialize;
@@ -32,6 +34,8 @@ use std::{
     sync::Arc,
     time::Instant,
 };
+#[cfg(feature = "prometheus")]
+use std::collections::HashSet;
 use tokio::{
     io::unix::AsyncFd,
     signal,
@@ -63,6 +67,11 @@ struct Cli {
     /// Output sink: "stdout" (default), "webhook:URL", "file:PATH", "syslog:HOST"
     #[arg(short, long, default_value = "stdout")]
     output: String,
+
+    /// Prometheus metrics HTTP port
+    #[cfg(feature = "prometheus")]
+    #[arg(long, default_value_t = 9090)]
+    metrics_port: u16,
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +293,26 @@ struct EventOutput {
     tls_details: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tls_payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mcp_category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_sdk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_fingerprint: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    classifier_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pii_detected: Option<bool>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -308,42 +337,24 @@ impl From<&ProcessedEvent> for EventOutput {
             pod_name: e.pod_name.clone(),
             pod_namespace: e.pod_namespace.clone(),
             service_account: e.service_account.clone(),
-            ml_confidence: {
-                #[cfg(feature = "ml")]
-                { e.behavior.as_ref().map(|b| b.confidence) }
-                #[cfg(not(feature = "ml"))]
-                { None }
-            },
-            ml_provider: {
-                #[cfg(feature = "ml")]
-                {
-                    e.behavior.as_ref().and_then(|b| {
-                        if let ml::BehaviorClass::LlmApi(ref p) = b.class {
-                            Some(p.clone())
-                        } else {
-                            None
-                        }
-                    })
-                }
-                #[cfg(not(feature = "ml"))]
-                { None }
-            },
-            behavior_class: {
-                #[cfg(feature = "ml")]
-                { e.behavior.as_ref().map(|b| b.class.to_string()) }
-                #[cfg(not(feature = "ml"))]
-                { None }
-            },
-            cluster_id: {
-                #[cfg(feature = "ml")]
-                { e.behavior.as_ref().map(|b| b.cluster_id) }
-                #[cfg(not(feature = "ml"))]
-                { None }
-            },
+            ml_confidence: e.ml_confidence,
+            ml_provider: e.ml_provider.clone(),
+            behavior_class: e.behavior_class.clone(),
+            cluster_id: e.cluster_id,
             sni: e.sni.clone(),
             tls_protocol: e.tls_protocol.clone(),
             tls_details: e.tls_details.clone(),
             tls_payload: e.tls_payload.clone(),
+            content_class: e.content_class.clone(),
+            llm_provider: e.llm_provider.clone(),
+            llm_endpoint: e.llm_endpoint.clone(),
+            llm_model: e.llm_model.clone(),
+            mcp_method: e.mcp_method.clone(),
+            mcp_category: e.mcp_category.clone(),
+            agent_sdk: e.agent_sdk.clone(),
+            agent_fingerprint: e.agent_fingerprint,
+            classifier_confidence: e.classifier_confidence,
+            pii_detected: e.pii_detected,
         }
     }
 }
@@ -364,6 +375,8 @@ async fn handle_event(
     #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
     #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
     #[cfg(feature = "tls")] sni_cache: &tls::SniCache,
+    #[cfg(feature = "prometheus")] llm_pids: &mut HashSet<u32>,
+    #[cfg(feature = "prometheus")] unique_providers: &mut HashSet<String>,
 ) {
     let dst_ip = event.dest_ip();
 
@@ -404,6 +417,12 @@ async fn handle_event(
         None
     };
 
+    // Record policy decision metric
+    #[cfg(feature = "prometheus")]
+    if let Some(decision) = policy_str {
+        metrics::record_policy_decision(decision);
+    }
+
     // Store identity for processes communicating with LLM providers
     if provider.is_some() {
         if let Ok(mut imap) = identity_map.try_lock() {
@@ -439,7 +458,7 @@ async fn handle_event(
         );
     }
 
-    let mut processed = ProcessedEvent::from_network_event(&event, provider, policy_str);
+    let mut processed = events::from_network_event(&event, provider, policy_str);
     // Override container_id with the one resolved from /proc (more reliable)
     if !container_id.is_empty() {
         processed.container_id = container_id;
@@ -476,11 +495,54 @@ async fn handle_event(
                     processed.provider = Some(format!("{} (ML)", p));
                 }
             }
+            processed.ml_confidence = Some(b.confidence);
+            processed.behavior_class = Some(b.class.to_string());
+            processed.cluster_id = Some(b.cluster_id);
+            if let ml::BehaviorClass::LlmApi(ref p) = b.class {
+                processed.ml_provider = Some(p.clone());
+            }
+
+            #[cfg(feature = "prometheus")]
+            metrics::record_ml_classification(&b.class.to_string());
         }
-        processed.behavior = behavior;
     }
 
-    let _ = tx.send(processed);
+    // Record event metrics (all events, not just interesting ones)
+    #[cfg(feature = "prometheus")]
+    metrics::record_event(
+        &processed.event_type,
+        processed.provider.as_deref(),
+        processed.bytes,
+    );
+
+    // Only broadcast interesting events (LLM/AI-related)
+    // Non-interesting traffic is only visible at debug log level
+    if processed.provider.is_some() {
+        // Track unique PIDs and providers for metrics
+        #[cfg(feature = "prometheus")]
+        {
+            llm_pids.insert(processed.pid);
+            metrics::set_active_pids(llm_pids.len());
+            if let Some(ref p) = processed.provider {
+                if unique_providers.insert(p.clone()) {
+                    metrics::set_providers_detected(unique_providers.len());
+                }
+            }
+        }
+        let _ = tx.send(processed);
+    } else {
+        debug!(
+            "[{}] PID: {} ({}) | {}:{} -> {}:{} | {} bytes",
+            processed.event_type,
+            processed.pid,
+            processed.process_name,
+            processed.src_ip,
+            processed.src_port,
+            processed.dst_ip,
+            processed.dst_port,
+            processed.bytes,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +575,7 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                                 payload,
                             );
                         }
-                    } else if let Some(ref provider) = event.provider {
+                    } else {
                         info!(
                             "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}{}",
                             event.event_type,
@@ -526,25 +588,13 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                             event.dst_ip,
                             event.dst_port,
                             event.bytes,
-                            provider,
+                            event.provider.as_deref().unwrap_or("unknown"),
                             event.policy.as_ref().map(|p| format!(" | Policy: {}", p)).unwrap_or_default(),
                             if !event.container_id.is_empty() {
                                 format!(" | Container: {}", event.container_id)
                             } else {
                                 String::new()
                             },
-                        );
-                    } else {
-                        log::debug!(
-                            "[{}] PID: {} ({}) | {}:{} -> {}:{} | {} bytes",
-                            event.event_type,
-                            event.pid,
-                            event.process_name,
-                            event.src_ip,
-                            event.src_port,
-                            event.dst_ip,
-                            event.dst_port,
-                            event.bytes,
                         );
                     }
                 }
@@ -570,8 +620,15 @@ async fn main() -> Result<()> {
     )
     .init();
 
+    // Initialize Prometheus metrics exporter
+    #[cfg(feature = "prometheus")]
+    metrics::init(cli.metrics_port)?;
+
     // Resolve LLM provider IPs into shared map
     let provider_map = Arc::new(RwLock::new(resolve_provider_ips()));
+
+    #[cfg(feature = "prometheus")]
+    metrics::set_dns_resolutions(provider_map.read().await.len());
 
     // Spawn periodic DNS re-resolution task
     {
@@ -584,6 +641,8 @@ async fn main() -> Result<()> {
                     .unwrap_or_default();
                 let count = new_map.len();
                 *pm.write().await = new_map;
+                #[cfg(feature = "prometheus")]
+                metrics::set_dns_resolutions(count);
                 info!("Re-resolved {} LLM provider IPs", count);
             }
         });
@@ -785,6 +844,10 @@ async fn main() -> Result<()> {
         let mut ml_last_gc = Instant::now();
         #[cfg(feature = "ml")]
         info!("ML behavioral classifier initialized");
+        #[cfg(feature = "prometheus")]
+        let mut llm_pids: HashSet<u32> = HashSet::new();
+        #[cfg(feature = "prometheus")]
+        let mut unique_providers: HashSet<String> = HashSet::new();
         #[cfg(feature = "tls")]
         let mut sni_cache = tls::SniCache::new();
         #[cfg(feature = "tls")]
@@ -831,8 +894,16 @@ async fn main() -> Result<()> {
                         tls_data.ssl_ptr,
                     );
 
+                    // Get SNI hint for this PID
+                    let sni_hint = sni_cache.get(tls_data.pid);
+
                     if tls_conn_tracker.is_decided(tls_data.pid, tls_data.ssl_ptr) {
-                        // Already decided interesting — forward data
+                        // Already decided interesting — classify and forward
+                        let classification = tls::classify_payload(
+                            tls_data.payload_bytes(),
+                            tls_data.direction,
+                            sni_hint,
+                        );
                         debug!(
                             "TLS data {}: PID {} ({}) {} bytes",
                             direction_str,
@@ -841,20 +912,20 @@ async fn main() -> Result<()> {
                             tls_data.payload_len,
                         );
 
-                        let processed = ProcessedEvent::from_tls_data_event(
+                        let processed = events::from_tls_data_event(
                             &tls_data,
-                            Some("HTTP/LLM".to_string()),
-                            None,
+                            &classification,
                         );
                         let _ = tx.send(processed);
                     } else {
-                        // Still undecided — analyze this chunk
-                        let analysis = tls::analyze_first_chunk(
+                        // Still undecided — classify this chunk
+                        let classification = tls::classify_payload(
                             tls_data.payload_bytes(),
                             tls_data.direction,
+                            sni_hint,
                         );
 
-                        if analysis.is_interesting {
+                        if classification.is_interesting {
                             // Found LLM/MCP traffic!
                             tls_conn_tracker.set_verdict(
                                 tls_data.pid,
@@ -863,19 +934,24 @@ async fn main() -> Result<()> {
                             );
                             let _ = tls_verdict_map.insert(key, 1u8, 0); // INTERESTING
 
+                            #[cfg(feature = "prometheus")]
+                            {
+                                metrics::record_tls_verdict("interesting");
+                                metrics::record_classifier_confidence(classification.confidence);
+                            }
+
                             info!(
-                                "TLS: PID {} ({}) -> {} ({}) [chunk #{}]",
+                                "TLS: PID {} ({}) -> {} {} [chunk #{}]",
                                 tls_data.pid,
                                 tls_data.process_name(),
-                                analysis.protocol.as_deref().unwrap_or("unknown"),
-                                analysis.details.as_deref().unwrap_or(""),
+                                classification.content_class_str().unwrap_or("unknown"),
+                                classification.provider().unwrap_or(""),
                                 chunk_num,
                             );
 
-                            let processed = ProcessedEvent::from_tls_data_event(
+                            let processed = events::from_tls_data_event(
                                 &tls_data,
-                                analysis.protocol,
-                                analysis.details,
+                                &classification,
                             );
                             let _ = tx.send(processed);
                         } else if tls_conn_tracker.should_mark_boring(
@@ -889,6 +965,9 @@ async fn main() -> Result<()> {
                                 false,
                             );
                             let _ = tls_verdict_map.insert(key, 2u8, 0); // BORING
+
+                            #[cfg(feature = "prometheus")]
+                            metrics::record_tls_verdict("boring");
 
                             debug!(
                                 "TLS: PID {} ({}) -> boring after {} chunks",
@@ -953,6 +1032,10 @@ async fn main() -> Result<()> {
                         &mut ml_classifier,
                         #[cfg(feature = "tls")]
                         &sni_cache,
+                        #[cfg(feature = "prometheus")]
+                        &mut llm_pids,
+                        #[cfg(feature = "prometheus")]
+                        &mut unique_providers,
                     )
                     .await;
                 }
@@ -971,6 +1054,8 @@ async fn main() -> Result<()> {
             if tls_last_gc.elapsed() >= Duration::from_secs(60) {
                 sni_cache.gc();
                 tls_conn_tracker.gc();
+                #[cfg(feature = "prometheus")]
+                metrics::set_tls_connections_tracked(tls_conn_tracker.len());
                 tls_last_gc = Instant::now();
             }
         }

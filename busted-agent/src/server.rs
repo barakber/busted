@@ -1,4 +1,4 @@
-use crate::events::ProcessedEvent;
+use busted_types::processed::ProcessedEvent;
 use log::{info, warn};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -20,6 +20,12 @@ pub async fn run_socket_server(mut rx: broadcast::Receiver<ProcessedEvent>) {
             return;
         }
     };
+
+    // Allow non-root users to connect (agent runs as root, UI runs as user)
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(SOCKET_PATH, std::fs::Permissions::from_mode(0o777)) {
+        warn!("Failed to set socket permissions: {}", e);
+    }
 
     info!("UI socket server listening on {}", SOCKET_PATH);
 

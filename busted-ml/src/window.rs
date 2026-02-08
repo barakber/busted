@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Instant;
 
-use super::symbol::Symbol;
+use crate::symbol::Symbol;
 
 /// A symbol with timing and metadata for feature extraction.
 pub struct TimedSymbol {

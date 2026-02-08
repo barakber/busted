@@ -165,7 +165,13 @@ sudo ./target/debug/busted --output syslog:siem-host:514
 Run the UI dashboard (connects via Unix socket):
 
 ```bash
-./target/debug/busted-ui
+# The agent creates /tmp/busted.sock owned by root.
+# Either run the UI as root, or chmod the socket after agent starts:
+#   sudo chmod 777 /tmp/busted.sock
+sudo ./target/debug/busted-ui
+
+# Demo mode (no agent required — synthetic events):
+./target/debug/busted-ui --demo
 ```
 
 ## What Gets Monitored

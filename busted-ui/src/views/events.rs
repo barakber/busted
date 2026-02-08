@@ -91,8 +91,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
         .column(Column::auto().at_least(50.0)) // Port
         .column(Column::auto().at_least(70.0)) // Bytes
         .column(Column::auto().at_least(70.0)) // Provider
+        .column(Column::auto().at_least(80.0)) // Model
+        .column(Column::auto().at_least(100.0)) // SDK
+        .column(Column::auto().at_least(90.0)) // MCP Method
         .column(Column::auto().at_least(120.0)) // SNI
-        .column(Column::auto().at_least(100.0)) // TLS Details
         .column(Column::auto().at_least(80.0)) // Container
         .min_scrolled_height(0.0);
 
@@ -112,8 +114,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             header.col(|ui| { ui.strong("Port"); });
             header.col(|ui| { ui.strong("Bytes"); });
             header.col(|ui| { ui.strong("Provider"); });
+            header.col(|ui| { ui.strong("Model"); });
+            header.col(|ui| { ui.strong("SDK"); });
+            header.col(|ui| { ui.strong("MCP Method"); });
             header.col(|ui| { ui.strong("SNI"); });
-            header.col(|ui| { ui.strong("TLS Details"); });
             header.col(|ui| { ui.strong("Container"); });
         })
         .body(|body| {
@@ -128,13 +132,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
                 row.col(|ui| { ui.label(event.dst_port.to_string()); });
                 row.col(|ui| { ui.label(format_bytes(event.bytes)); });
                 row.col(|ui| {
-                    ui.label(event.provider.as_deref().unwrap_or("-"));
+                    ui.label(event.llm_provider.as_deref()
+                        .or(event.provider.as_deref())
+                        .unwrap_or("-"));
+                });
+                row.col(|ui| {
+                    ui.label(event.llm_model.as_deref().unwrap_or("-"));
+                });
+                row.col(|ui| {
+                    ui.label(event.agent_sdk.as_deref().unwrap_or("-"));
+                });
+                row.col(|ui| {
+                    ui.label(event.mcp_method.as_deref().unwrap_or("-"));
                 });
                 row.col(|ui| {
                     ui.label(event.sni.as_deref().unwrap_or("-"));
-                });
-                row.col(|ui| {
-                    ui.label(event.tls_details.as_deref().unwrap_or("-"));
                 });
                 row.col(|ui| {
                     let cid = if event.container_id.is_empty() { "-" } else { &event.container_id };
