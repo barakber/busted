@@ -1,4 +1,8 @@
 mod events;
+#[cfg(feature = "k8s")]
+mod k8s;
+#[cfg(feature = "ml")]
+pub(crate) mod ml;
 mod server;
 mod siem;
 
@@ -255,6 +259,17 @@ struct EventOutput {
     cgroup_id: u64,
     request_rate: Option<f64>,
     session_bytes: Option<u64>,
+    pod_name: Option<String>,
+    pod_namespace: Option<String>,
+    service_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ml_confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ml_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    behavior_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_id: Option<i32>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -276,6 +291,41 @@ impl From<&ProcessedEvent> for EventOutput {
             cgroup_id: e.cgroup_id,
             request_rate: e.request_rate,
             session_bytes: e.session_bytes,
+            pod_name: e.pod_name.clone(),
+            pod_namespace: e.pod_namespace.clone(),
+            service_account: e.service_account.clone(),
+            ml_confidence: {
+                #[cfg(feature = "ml")]
+                { e.behavior.as_ref().map(|b| b.confidence) }
+                #[cfg(not(feature = "ml"))]
+                { None }
+            },
+            ml_provider: {
+                #[cfg(feature = "ml")]
+                {
+                    e.behavior.as_ref().and_then(|b| {
+                        if let ml::BehaviorClass::LlmApi(ref p) = b.class {
+                            Some(p.clone())
+                        } else {
+                            None
+                        }
+                    })
+                }
+                #[cfg(not(feature = "ml"))]
+                { None }
+            },
+            behavior_class: {
+                #[cfg(feature = "ml")]
+                { e.behavior.as_ref().map(|b| b.class.to_string()) }
+                #[cfg(not(feature = "ml"))]
+                { None }
+            },
+            cluster_id: {
+                #[cfg(feature = "ml")]
+                { e.behavior.as_ref().map(|b| b.cluster_id) }
+                #[cfg(not(feature = "ml"))]
+                { None }
+            },
         }
     }
 }
@@ -293,6 +343,8 @@ async fn handle_event(
     enforce: bool,
     container_cache: &mut HashMap<u32, String>,
     pid_stats: &mut HashMap<u32, PidStats>,
+    #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
+    #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
 ) {
     let dst_ip = event.dest_ip();
 
@@ -357,6 +409,33 @@ async fn handle_event(
     }
     processed.request_rate = Some(request_rate);
     processed.session_bytes = Some(session_bytes);
+
+    // Enrich with Kubernetes pod metadata if available
+    #[cfg(feature = "k8s")]
+    {
+        let k8s_map = k8s_cache.read().await;
+        if let Some(meta) = k8s::resolve_pod_metadata(&processed.container_id, &k8s_map) {
+            processed.pod_name = Some(meta.pod_name);
+            processed.pod_namespace = Some(meta.namespace);
+            processed.service_account = Some(meta.service_account);
+        }
+    }
+
+    // ML behavioral classification
+    #[cfg(feature = "ml")]
+    {
+        let behavior = ml_classifier.process_event(&event, provider);
+        if let Some(ref b) = behavior {
+            // If ML detects LLM traffic with high confidence but IP match missed it,
+            // promote the ML prediction to the provider field.
+            if b.is_novel && b.confidence > 0.85 && processed.provider.is_none() {
+                if let ml::BehaviorClass::LlmApi(ref p) = b.class {
+                    processed.provider = Some(format!("{} (ML)", p));
+                }
+            }
+        }
+        processed.behavior = behavior;
+    }
 
     let _ = tx.send(processed);
 }
@@ -507,6 +586,13 @@ async fn main() -> Result<()> {
         .context("Failed to attach tcp_close")?;
     info!("Attached to tcp_close");
 
+    let program: &mut KProbe = bpf.program_mut("udp_sendmsg").unwrap().try_into()?;
+    program.load()?;
+    program
+        .attach("udp_sendmsg", 0)
+        .context("Failed to attach udp_sendmsg")?;
+    info!("Attached to udp_sendmsg (DNS probe)");
+
     // Try to attach LSM hook (optional — requires CONFIG_BPF_LSM and lsm=bpf boot param)
     match Btf::from_sys_fs() {
         Ok(btf) => {
@@ -539,6 +625,15 @@ async fn main() -> Result<()> {
         AyaHashMap::try_from(bpf.take_map("POLICY_MAP").unwrap())?;
     let policy_map = Arc::new(Mutex::new(policy_map));
 
+    // Kubernetes pod metadata cache (behind feature flag)
+    #[cfg(feature = "k8s")]
+    let k8s_cache = {
+        let cache = Arc::new(RwLock::new(HashMap::<String, k8s::PodMetadata>::new()));
+        let cache_clone = cache.clone();
+        task::spawn(k8s::start_pod_watcher(cache_clone));
+        cache
+    };
+
     // Event broadcast channel
     let (tx, _) = broadcast::channel::<ProcessedEvent>(4096);
 
@@ -566,10 +661,19 @@ async fn main() -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf)?;
     let enforce = cli.enforce;
 
+    #[cfg(feature = "k8s")]
+    let k8s_cache_clone = k8s_cache.clone();
+
     task::spawn(async move {
         let mut container_cache: HashMap<u32, String> = HashMap::new();
         let mut pid_stats: HashMap<u32, PidStats> = HashMap::new();
         let mut async_fd = async_fd;
+        #[cfg(feature = "ml")]
+        let mut ml_classifier = ml::MlClassifier::new();
+        #[cfg(feature = "ml")]
+        let mut ml_last_gc = Instant::now();
+        #[cfg(feature = "ml")]
+        info!("ML behavioral classifier initialized");
 
         loop {
             let mut guard = match async_fd.readable_mut().await {
@@ -594,11 +698,22 @@ async fn main() -> Result<()> {
                         enforce,
                         &mut container_cache,
                         &mut pid_stats,
+                        #[cfg(feature = "k8s")]
+                        &k8s_cache_clone,
+                        #[cfg(feature = "ml")]
+                        &mut ml_classifier,
                     )
                     .await;
                 }
             }
             guard.clear_ready();
+
+            // Periodic ML idle PID garbage collection
+            #[cfg(feature = "ml")]
+            if ml_last_gc.elapsed() >= Duration::from_secs(60) {
+                ml_classifier.gc_idle_pids(Duration::from_secs(300));
+                ml_last_gc = Instant::now();
+            }
         }
     });
 

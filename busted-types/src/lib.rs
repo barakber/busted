@@ -21,6 +21,8 @@ pub enum EventType {
     DataReceived = 3,
     /// Connection closed
     ConnectionClosed = 4,
+    /// DNS query (UDP to port 53)
+    DnsQuery = 5,
 }
 
 /// Network protocol family

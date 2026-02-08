@@ -211,6 +211,39 @@ fn try_tcp_close(ctx: ProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
+/// Probe on udp_sendmsg to capture DNS queries (dport 53)
+#[kprobe]
+pub fn udp_sendmsg(ctx: ProbeContext) -> u32 {
+    match try_udp_sendmsg(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_udp_sendmsg(ctx: ProbeContext) -> Result<u32, u32> {
+    let mut event = NetworkEvent::new();
+
+    if let Some(sock_ptr) = ctx.arg::<*const u8>(0) {
+        read_sock_info(sock_ptr, &mut event);
+    }
+
+    // Only emit events for DNS traffic (destination port 53)
+    if event.dport != 53 {
+        return Ok(0);
+    }
+
+    fill_common_fields(&mut event);
+    event.event_type = 5; // DnsQuery
+
+    if let Some(size) = ctx.arg::<u64>(2) {
+        event.bytes = size;
+    }
+
+    EVENTS.output(&event, 0).ok();
+
+    Ok(0)
+}
+
 // ---------------------------------------------------------------------------
 // LSM hook for policy enforcement
 // ---------------------------------------------------------------------------

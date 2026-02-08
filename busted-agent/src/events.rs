@@ -19,6 +19,11 @@ pub struct ProcessedEvent {
     pub cgroup_id: u64,
     pub request_rate: Option<f64>,
     pub session_bytes: Option<u64>,
+    pub pod_name: Option<String>,
+    pub pod_namespace: Option<String>,
+    pub service_account: Option<String>,
+    #[cfg(feature = "ml")]
+    pub behavior: Option<crate::ml::BehaviorIdentity>,
 }
 
 impl ProcessedEvent {
@@ -32,6 +37,7 @@ impl ProcessedEvent {
             2 => "DATA_SENT",
             3 => "DATA_RECEIVED",
             4 => "CONNECTION_CLOSED",
+            5 => "DNS_QUERY",
             _ => "UNKNOWN",
         };
 
@@ -52,6 +58,11 @@ impl ProcessedEvent {
             cgroup_id: event.cgroup_id,
             request_rate: None,
             session_bytes: None,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+            #[cfg(feature = "ml")]
+            behavior: None,
         }
     }
 }

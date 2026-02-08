@@ -32,7 +32,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.filter_event_type, String::new(), "All");
-                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED"] {
+                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED", "DNS_QUERY"] {
                     ui.selectable_value(
                         &mut app.filter_event_type,
                         t.to_string(),

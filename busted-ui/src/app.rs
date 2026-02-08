@@ -24,6 +24,20 @@ pub struct ProcessedEvent {
     pub request_rate: Option<f64>,
     #[serde(default)]
     pub session_bytes: Option<u64>,
+    #[serde(default)]
+    pub pod_name: Option<String>,
+    #[serde(default)]
+    pub pod_namespace: Option<String>,
+    #[serde(default)]
+    pub service_account: Option<String>,
+    #[serde(default)]
+    pub ml_confidence: Option<f64>,
+    #[serde(default)]
+    pub ml_provider: Option<String>,
+    #[serde(default)]
+    pub behavior_class: Option<String>,
+    #[serde(default)]
+    pub cluster_id: Option<i32>,
 }
 
 #[derive(Clone, Debug)]
