@@ -184,43 +184,47 @@
 <a href=#184 id=184 data-nosnippet>184</a>        agent_fingerprint: <span class="prelude-val">Some</span>(<span class="number">0xdeadbeef</span>),
 <a href=#185 id=185 data-nosnippet>185</a>        classifier_confidence: <span class="kw">if </span>is_tls { <span class="prelude-val">Some</span>(<span class="number">0.95</span>) } <span class="kw">else </span>{ <span class="prelude-val">None </span>},
 <a href=#186 id=186 data-nosnippet>186</a>        pii_detected: <span class="kw">if </span>is_tls { <span class="prelude-val">Some</span>(<span class="bool-val">false</span>) } <span class="kw">else </span>{ <span class="prelude-val">None </span>},
-<a href=#187 id=187 data-nosnippet>187</a>    }
-<a href=#188 id=188 data-nosnippet>188</a>}
-<a href=#189 id=189 data-nosnippet>189</a>
-<a href=#190 id=190 data-nosnippet>190</a><span class="kw">pub fn </span>start(tx: mpsc::Sender&lt;ProcessedEvent&gt;) {
-<a href=#191 id=191 data-nosnippet>191</a>    std::thread::spawn(<span class="kw">move </span>|| {
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span><span class="kw-2">mut </span>cycle = <span class="number">0usize</span>;
-<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">loop </span>{
-<a href=#194 id=194 data-nosnippet>194</a>            <span class="kw">let </span>scenario = <span class="kw-2">&amp;</span>SCENARIOS[cycle % SCENARIOS.len()];
-<a href=#195 id=195 data-nosnippet>195</a>
-<a href=#196 id=196 data-nosnippet>196</a>            <span class="comment">// TCP_CONNECT
-<a href=#197 id=197 data-nosnippet>197</a>            </span><span class="kw">let </span>event = make_event(scenario, <span class="string">"TCP_CONNECT"</span>, <span class="number">0</span>);
-<a href=#198 id=198 data-nosnippet>198</a>            <span class="kw">if </span>tx.send(event).is_err() {
-<a href=#199 id=199 data-nosnippet>199</a>                <span class="kw">return</span>;
-<a href=#200 id=200 data-nosnippet>200</a>            }
-<a href=#201 id=201 data-nosnippet>201</a>            std::thread::sleep(Duration::from_millis(<span class="number">50</span>));
-<a href=#202 id=202 data-nosnippet>202</a>
-<a href=#203 id=203 data-nosnippet>203</a>            <span class="comment">// TLS_DATA_WRITE (request)
-<a href=#204 id=204 data-nosnippet>204</a>            </span><span class="kw">let </span>request_bytes = <span class="number">256 </span>+ (cycle <span class="kw">as </span>u64 * <span class="number">37</span>) % <span class="number">512</span>;
-<a href=#205 id=205 data-nosnippet>205</a>            <span class="kw">let </span>event = make_event(scenario, <span class="string">"TLS_DATA_WRITE"</span>, request_bytes);
-<a href=#206 id=206 data-nosnippet>206</a>            <span class="kw">if </span>tx.send(event).is_err() {
-<a href=#207 id=207 data-nosnippet>207</a>                <span class="kw">return</span>;
-<a href=#208 id=208 data-nosnippet>208</a>            }
-<a href=#209 id=209 data-nosnippet>209</a>            std::thread::sleep(Duration::from_millis(<span class="number">50</span>));
-<a href=#210 id=210 data-nosnippet>210</a>
-<a href=#211 id=211 data-nosnippet>211</a>            <span class="comment">// TLS_DATA_READ (response)
-<a href=#212 id=212 data-nosnippet>212</a>            </span><span class="kw">let </span>response_bytes = <span class="number">1024 </span>+ (cycle <span class="kw">as </span>u64 * <span class="number">73</span>) % <span class="number">4096</span>;
-<a href=#213 id=213 data-nosnippet>213</a>            <span class="kw">let </span>event = make_event(scenario, <span class="string">"TLS_DATA_READ"</span>, response_bytes);
-<a href=#214 id=214 data-nosnippet>214</a>            <span class="kw">if </span>tx.send(event).is_err() {
-<a href=#215 id=215 data-nosnippet>215</a>                <span class="kw">return</span>;
-<a href=#216 id=216 data-nosnippet>216</a>            }
-<a href=#217 id=217 data-nosnippet>217</a>
-<a href=#218 id=218 data-nosnippet>218</a>            cycle += <span class="number">1</span>;
-<a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>            <span class="comment">// 300-500ms between scenarios
-<a href=#221 id=221 data-nosnippet>221</a>            </span><span class="kw">let </span>delay = <span class="number">300 </span>+ (cycle * <span class="number">29</span>) % <span class="number">200</span>;
-<a href=#222 id=222 data-nosnippet>222</a>            std::thread::sleep(Duration::from_millis(delay <span class="kw">as </span>u64));
-<a href=#223 id=223 data-nosnippet>223</a>        }
-<a href=#224 id=224 data-nosnippet>224</a>    });
-<a href=#225 id=225 data-nosnippet>225</a>}
+<a href=#187 id=187 data-nosnippet>187</a>        llm_user_message: <span class="prelude-val">None</span>,
+<a href=#188 id=188 data-nosnippet>188</a>        llm_system_prompt: <span class="prelude-val">None</span>,
+<a href=#189 id=189 data-nosnippet>189</a>        llm_messages_json: <span class="prelude-val">None</span>,
+<a href=#190 id=190 data-nosnippet>190</a>        llm_stream: <span class="prelude-val">None</span>,
+<a href=#191 id=191 data-nosnippet>191</a>    }
+<a href=#192 id=192 data-nosnippet>192</a>}
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a><span class="kw">pub fn </span>start(tx: mpsc::Sender&lt;ProcessedEvent&gt;) {
+<a href=#195 id=195 data-nosnippet>195</a>    std::thread::spawn(<span class="kw">move </span>|| {
+<a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">let </span><span class="kw-2">mut </span>cycle = <span class="number">0usize</span>;
+<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">loop </span>{
+<a href=#198 id=198 data-nosnippet>198</a>            <span class="kw">let </span>scenario = <span class="kw-2">&amp;</span>SCENARIOS[cycle % SCENARIOS.len()];
+<a href=#199 id=199 data-nosnippet>199</a>
+<a href=#200 id=200 data-nosnippet>200</a>            <span class="comment">// TCP_CONNECT
+<a href=#201 id=201 data-nosnippet>201</a>            </span><span class="kw">let </span>event = make_event(scenario, <span class="string">"TCP_CONNECT"</span>, <span class="number">0</span>);
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="kw">if </span>tx.send(event).is_err() {
+<a href=#203 id=203 data-nosnippet>203</a>                <span class="kw">return</span>;
+<a href=#204 id=204 data-nosnippet>204</a>            }
+<a href=#205 id=205 data-nosnippet>205</a>            std::thread::sleep(Duration::from_millis(<span class="number">50</span>));
+<a href=#206 id=206 data-nosnippet>206</a>
+<a href=#207 id=207 data-nosnippet>207</a>            <span class="comment">// TLS_DATA_WRITE (request)
+<a href=#208 id=208 data-nosnippet>208</a>            </span><span class="kw">let </span>request_bytes = <span class="number">256 </span>+ (cycle <span class="kw">as </span>u64 * <span class="number">37</span>) % <span class="number">512</span>;
+<a href=#209 id=209 data-nosnippet>209</a>            <span class="kw">let </span>event = make_event(scenario, <span class="string">"TLS_DATA_WRITE"</span>, request_bytes);
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="kw">if </span>tx.send(event).is_err() {
+<a href=#211 id=211 data-nosnippet>211</a>                <span class="kw">return</span>;
+<a href=#212 id=212 data-nosnippet>212</a>            }
+<a href=#213 id=213 data-nosnippet>213</a>            std::thread::sleep(Duration::from_millis(<span class="number">50</span>));
+<a href=#214 id=214 data-nosnippet>214</a>
+<a href=#215 id=215 data-nosnippet>215</a>            <span class="comment">// TLS_DATA_READ (response)
+<a href=#216 id=216 data-nosnippet>216</a>            </span><span class="kw">let </span>response_bytes = <span class="number">1024 </span>+ (cycle <span class="kw">as </span>u64 * <span class="number">73</span>) % <span class="number">4096</span>;
+<a href=#217 id=217 data-nosnippet>217</a>            <span class="kw">let </span>event = make_event(scenario, <span class="string">"TLS_DATA_READ"</span>, response_bytes);
+<a href=#218 id=218 data-nosnippet>218</a>            <span class="kw">if </span>tx.send(event).is_err() {
+<a href=#219 id=219 data-nosnippet>219</a>                <span class="kw">return</span>;
+<a href=#220 id=220 data-nosnippet>220</a>            }
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a>            cycle += <span class="number">1</span>;
+<a href=#223 id=223 data-nosnippet>223</a>
+<a href=#224 id=224 data-nosnippet>224</a>            <span class="comment">// 300-500ms between scenarios
+<a href=#225 id=225 data-nosnippet>225</a>            </span><span class="kw">let </span>delay = <span class="number">300 </span>+ (cycle * <span class="number">29</span>) % <span class="number">200</span>;
+<a href=#226 id=226 data-nosnippet>226</a>            std::thread::sleep(Duration::from_millis(delay <span class="kw">as </span>u64));
+<a href=#227 id=227 data-nosnippet>227</a>        }
+<a href=#228 id=228 data-nosnippet>228</a>    });
+<a href=#229 id=229 data-nosnippet>229</a>}
 </code></pre></div></section></main></body></html>

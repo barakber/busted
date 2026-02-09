@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ContentClass","Direction","Protocol"],"fn":["classify"],"mod":["fingerprint","http","json","llm","mcp","pii"],"struct":["Classification"]};
+window.SIDEBAR_ITEMS = {"enum":["ContentClass","Direction","Protocol"],"fn":["classify"],"mod":["fingerprint","http","json","llm","mcp","pii","protocols"],"struct":["Classification"]};

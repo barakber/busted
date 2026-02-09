@@ -20,11 +20,12 @@
 <a href=#20 id=20 data-nosnippet>20</a>            enforce: args.enforce,
 <a href=#21 id=21 data-nosnippet>21</a>            output: args.output,
 <a href=#22 id=22 data-nosnippet>22</a>            policy_dir: args.policy_dir,
-<a href=#23 id=23 data-nosnippet>23</a>            metrics_port: args.metrics_port,
-<a href=#24 id=24 data-nosnippet>24</a>        };
-<a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a>        <span class="kw">let </span>rt = tokio::runtime::Runtime::new()<span class="question-mark">?</span>;
-<a href=#27 id=27 data-nosnippet>27</a>        rt.block_on(busted_agent::run_agent(config))
-<a href=#28 id=28 data-nosnippet>28</a>    }
-<a href=#29 id=29 data-nosnippet>29</a>}
+<a href=#23 id=23 data-nosnippet>23</a>            policy_rule: args.rule,
+<a href=#24 id=24 data-nosnippet>24</a>            metrics_port: args.metrics_port,
+<a href=#25 id=25 data-nosnippet>25</a>        };
+<a href=#26 id=26 data-nosnippet>26</a>
+<a href=#27 id=27 data-nosnippet>27</a>        <span class="kw">let </span>rt = tokio::runtime::Runtime::new()<span class="question-mark">?</span>;
+<a href=#28 id=28 data-nosnippet>28</a>        rt.block_on(busted_agent::run_agent(config))
+<a href=#29 id=29 data-nosnippet>29</a>    }
+<a href=#30 id=30 data-nosnippet>30</a>}
 </code></pre></div></section></main></body></html>
