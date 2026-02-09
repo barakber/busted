@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["SOCKET_PATH"],"fn":["main"],"mod":["app","demo","views"]};
+window.SIDEBAR_ITEMS = {"fn":["run_ui"],"mod":["app","demo","views"],"struct":["UiConfig"]};

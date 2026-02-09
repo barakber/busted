@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OutputSink"],"fn":["run_siem_consumer"]};

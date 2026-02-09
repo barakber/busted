@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["LLM_ENDPOINTS","LLM_SUBNETS","LLM_SUBNETS_V6"],"fn":["classify_llm_provider","cli_output_consumer","handle_event","main","resolve_container_id","resolve_container_id_from_proc","resolve_provider_ips"],"mod":["events","server","siem"],"struct":["Cli","EventOutput","PidStats"]};
+window.SIDEBAR_ITEMS = {"fn":["main"],"mod":["cli","monitor","policy","ui"]};

@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["OutputSink"],"fn":["flush_webhook_batch","run_file_consumer","run_siem_consumer","run_syslog_consumer","run_webhook_consumer"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["SCENARIOS"],"fn":["make_event","now_timestamp","start"],"struct":["Scenario"]};
+window.SIDEBAR_ITEMS = {"fn":["start"]};

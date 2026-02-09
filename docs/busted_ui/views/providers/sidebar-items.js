@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["format_bytes","provider_color","show"]};
+window.SIDEBAR_ITEMS = {"fn":["show"]};

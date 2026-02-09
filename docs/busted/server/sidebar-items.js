@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["SOCKET_PATH"],"fn":["run_socket_server"]};
