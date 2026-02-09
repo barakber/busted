@@ -1,0 +1,40 @@
+[package]
+name = "busted-cli"
+description = "Unified CLI for the Busted LLM/AI communication monitoring system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "busted"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde_json = { workspace = true }
+busted-agent = { path = "../busted-agent", optional = true }
+busted-ui = { path = "../busted-ui", optional = true }
+busted-opa = { path = "../busted-opa", optional = true }
+busted-types = { path = "../busted-types", features = ["user"] }
+tokio = { workspace = true }
+
+[features]
+default = ["monitor", "policy"]
+monitor = ["dep:busted-agent"]
+ui = ["dep:busted-ui"]
+policy = ["dep:busted-opa"]
+full = ["monitor", "ui", "policy"]
+# Pass-through features for busted-agent
+k8s = ["busted-agent?/k8s"]
+ml = ["busted-agent?/ml"]
+tls = ["busted-agent?/tls"]
+opa = ["busted-agent?/opa"]
+prometheus = ["busted-agent?/prometheus"]

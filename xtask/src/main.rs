@@ -140,7 +140,7 @@ fn build_userspace(release: bool, features: Option<&str>) -> Result<()> {
 
 fn run(opts: RunOptions) -> Result<()> {
     let profile = if opts.release { "release" } else { "debug" };
-    let bin_path = PathBuf::from(format!("target/{}/busted", profile));
+    let bin_path = PathBuf::from(format!("target/{}/busted-agent", profile));
 
     let mut cmd = Command::new(bin_path);
     cmd.args(&opts.run_args);

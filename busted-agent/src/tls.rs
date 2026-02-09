@@ -22,6 +22,12 @@ const SNI_TTL_SECS: u64 = 300;
 /// Maximum entries before forced GC.
 const SNI_MAX_ENTRIES: usize = 10_000;
 
+impl Default for SniCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SniCache {
     pub fn new() -> Self {
         SniCache {
@@ -158,6 +164,12 @@ const CONN_TTL_SECS: u64 = 300;
 /// HTTP/2 typically needs 3-5 SSL_write calls before the actual request body.
 const MAX_UNDECIDED_CHUNKS: u32 = 10;
 
+impl Default for TlsConnTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TlsConnTracker {
     pub fn new() -> Self {
         TlsConnTracker {
@@ -208,6 +220,11 @@ impl TlsConnTracker {
     /// Number of tracked connections.
     pub fn len(&self) -> usize {
         self.conns.len()
+    }
+
+    /// Returns true if there are no tracked connections.
+    pub fn is_empty(&self) -> bool {
+        self.conns.is_empty()
     }
 
     /// Evict entries older than TTL.

@@ -10,6 +10,10 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "busted_ui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "busted-ui"
 path = "src/main.rs"

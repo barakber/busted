@@ -97,6 +97,22 @@ impl PolicyEngine {
         Ok(PolicyDecision { action, reasons })
     }
 
+    /// Create an engine from a raw Rego source string (no directory needed).
+    ///
+    /// Useful for inline `--rule` evaluation from the CLI.
+    pub fn from_rego(source: &str) -> Result<Self> {
+        let mut engine = regorus::Engine::new();
+        engine.set_rego_v0(true);
+        engine
+            .add_policy("inline.rego".to_string(), source.to_string())
+            .context("Failed to parse inline Rego policy")?;
+        info!("OPA policy engine loaded from inline Rego source");
+        Ok(Self {
+            engine,
+            policy_dir: PathBuf::new(),
+        })
+    }
+
     /// Re-read all policies from the original directory (hot-reload).
     pub fn reload(&mut self) -> Result<()> {
         let mut engine = regorus::Engine::new();
@@ -1182,6 +1198,71 @@ decision = "deny" { count(input.process_name) > 3 }
         event.process_name = "ls".into();
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
+
+    // ================================================================
+    // from_rego (inline Rego source)
+    // ================================================================
+
+    #[test]
+    fn from_rego_deny_all() {
+        let mut engine = PolicyEngine::from_rego(
+            r#"package busted
+default decision = "deny"
+"#,
+        )
+        .unwrap();
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert_eq!(d.action, Action::Deny);
+    }
+
+    #[test]
+    fn from_rego_allow_all() {
+        let mut engine = PolicyEngine::from_rego(
+            r#"package busted
+default decision = "allow"
+"#,
+        )
+        .unwrap();
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert_eq!(d.action, Action::Allow);
+    }
+
+    #[test]
+    fn from_rego_with_conditions() {
+        let mut engine = PolicyEngine::from_rego(
+            r#"
+package busted
+default decision = "allow"
+decision = "deny" {
+    input.pii_detected == true
+}
+reasons[r] {
+    input.pii_detected == true
+    r := "PII detected in inline rule"
+}
+"#,
+        )
+        .unwrap();
+
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert_eq!(d.action, Action::Allow);
+
+        let mut pii_event = sample_event();
+        pii_event.pii_detected = Some(true);
+        let d = engine.evaluate(&pii_event).unwrap();
+        assert_eq!(d.action, Action::Deny);
+        assert!(d.reasons.iter().any(|r| r.contains("PII")));
+    }
+
+    #[test]
+    fn from_rego_invalid_source_errors() {
+        let result = PolicyEngine::from_rego("this is not valid rego {{{");
+        assert!(result.is_err());
+    }
+
+    // ================================================================
+    // Rego builtin functions accessible
+    // ================================================================
 
     #[test]
     fn rego_regex_match_builtin() {

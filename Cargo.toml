@@ -8,6 +8,7 @@ members = [
     "busted-ml",
     "busted-opa",
     "busted-ui",
+    "busted-cli",
     "xtask",
 ]
 # busted-ebpf must be built separately for bpfel-unknown-none via `cargo xtask build`
@@ -18,6 +19,7 @@ default-members = [
     "busted-ml",
     "busted-opa",
     "busted-ui",
+    "busted-cli",
     "xtask",
 ]
 

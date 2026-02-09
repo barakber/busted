@@ -42,6 +42,10 @@ pub fn init(port: u16) -> Result<()> {
         "busted_ml_classifications_total",
         "ML behavioral classifications"
     );
+    describe_histogram!(
+        "busted_opa_eval_duration_seconds",
+        "OPA policy evaluation latency in seconds"
+    );
 
     info!("Prometheus metrics listening on {}", addr);
     Ok(())
@@ -97,4 +101,11 @@ pub fn record_classifier_confidence(confidence: f32) {
 pub fn record_ml_classification(behavior_class: &str) {
     counter!("busted_ml_classifications_total", "behavior_class" => behavior_class.to_string())
         .increment(1);
+}
+
+/// Record OPA policy evaluation duration.
+#[cfg_attr(not(feature = "opa"), allow(dead_code))]
+pub fn record_opa_eval_duration(duration: std::time::Duration, decision: &str) {
+    histogram!("busted_opa_eval_duration_seconds", "decision" => decision.to_string())
+        .record(duration.as_secs_f64());
 }

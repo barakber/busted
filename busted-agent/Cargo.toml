@@ -10,8 +10,12 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[lib]
+name = "busted_agent"
+path = "src/lib.rs"
+
 [[bin]]
-name = "busted"
+name = "busted-agent"
 path = "src/main.rs"
 
 [dependencies]
