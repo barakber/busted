@@ -510,7 +510,7 @@ pub mod processed {
         /// System prompt / instructions from the LLM request.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_system_prompt: Option<String>,
-        /// All conversation messages as JSON array (serialized Vec<LlmMessage>).
+        /// All conversation messages as JSON array (serialized `Vec<LlmMessage>`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_messages_json: Option<String>,
         /// Whether the request is streaming.
