@@ -55,6 +55,10 @@ pub fn from_network_event(
         agent_fingerprint: None,
         classifier_confidence: None,
         pii_detected: None,
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     }
 }
 
@@ -70,7 +74,7 @@ pub fn from_tls_data_event(
         _ => "UNKNOWN",
     };
 
-    let payload = String::from_utf8_lossy(event.payload_bytes()).to_string();
+    let payload = crate::tls::payload_to_string(event.payload_bytes());
 
     let tls_protocol = classification.content_class_str().map(|s| s.to_string());
     let tls_details = classification
@@ -125,6 +129,10 @@ pub fn from_tls_data_event(
         agent_fingerprint: classification.signature_hash(),
         classifier_confidence: Some(classification.confidence),
         pii_detected: Some(classification.pii_flags.any()),
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     }
 }
 

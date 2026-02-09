@@ -42,8 +42,12 @@ pub struct MonitorArgs {
     pub output: String,
 
     /// Directory containing OPA/Rego policy files
-    #[arg(long)]
+    #[arg(long, group = "policy_source")]
     pub policy_dir: Option<PathBuf>,
+
+    /// Inline Rego rule for policy evaluation
+    #[arg(long, group = "policy_source")]
+    pub rule: Option<String>,
 
     /// Prometheus metrics HTTP port
     #[arg(long, default_value_t = 9090)]
@@ -121,6 +125,38 @@ mod tests {
         } else {
             panic!("Expected Monitor command");
         }
+    }
+
+    #[test]
+    fn cli_parses_monitor_with_rule() {
+        let cli = Cli::try_parse_from([
+            "busted",
+            "monitor",
+            "--enforce",
+            "--rule",
+            "package busted\ndefault decision = \"deny\"",
+        ])
+        .unwrap();
+        if let Command::Monitor(args) = cli.command {
+            assert!(args.enforce);
+            assert!(args.rule.is_some());
+            assert!(args.policy_dir.is_none());
+        } else {
+            panic!("Expected Monitor command");
+        }
+    }
+
+    #[test]
+    fn cli_monitor_rule_and_policy_dir_conflict() {
+        let result = Cli::try_parse_from([
+            "busted",
+            "monitor",
+            "--rule",
+            "package busted",
+            "--policy-dir",
+            "/tmp/policies",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

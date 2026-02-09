@@ -19,7 +19,7 @@ use busted_types::{
 
 /// Ring buffer for sending events to userspace (512KB shared buffer)
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(524288, 0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(4194304, 0); // 4 MB (TLS events are ~16KB each)
 
 /// Map to store known AI agent identities
 #[map]
@@ -43,12 +43,16 @@ static SSL_READ_ARGS: HashMap<u64, SslReadArgs> = HashMap::with_max_entries(4096
 #[map]
 static TLS_CONN_VERDICT: HashMap<TlsConnKey, u8> = HashMap::with_max_entries(8192, 0);
 
-/// SSL_read args stashed between uprobe entry and uretprobe return
+/// SSL_read args stashed between uprobe entry and uretprobe return.
+/// For SSL_read_ex, readbytes_ptr is the pointer to the `size_t *readbytes` out-param.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SslReadArgs {
     ssl_ptr: u64,
     buf_ptr: u64,
+    /// 0 for SSL_read (use return value for byte count),
+    /// non-zero for SSL_read_ex (read *readbytes_ptr for byte count).
+    readbytes_ptr: u64,
 }
 
 /// Helper to get process name
@@ -341,6 +345,8 @@ fn try_ssl_ctrl_sni(ctx: ProbeContext) -> Result<u32, u32> {
 
 /// Verdict constant: connection is boring, skip future data
 const VERDICT_BORING: u8 = 2;
+/// Verdict constant: policy denied — kill the process on next SSL call
+const VERDICT_KILL: u8 = 3;
 
 /// Uprobe on SSL_write(SSL *ssl, const void *buf, int num)
 /// Captures outgoing plaintext data before encryption.
@@ -378,8 +384,12 @@ fn try_ssl_write_entry(ctx: ProbeContext) -> Result<u32, u32> {
         ssl_ptr,
     };
 
-    // Check verdict: if BORING, skip
+    // Check verdict: BORING → skip, KILL → terminate the process
     if let Some(verdict) = unsafe { TLS_CONN_VERDICT.get(&key) } {
+        if *verdict == VERDICT_KILL {
+            unsafe { aya_ebpf_bindings::helpers::bpf_send_signal(9) }; // SIGKILL
+            return Ok(0);
+        }
         if *verdict == VERDICT_BORING {
             return Ok(0);
         }
@@ -464,16 +474,72 @@ fn try_ssl_read_entry(ctx: ProbeContext) -> Result<u32, u32> {
         }
     }
 
-    // Stash args keyed by TID
+    // Stash args keyed by TID (readbytes_ptr=0 means use return value for byte count)
     let tid = pid_tgid & 0xFFFFFFFF;
-    let args = SslReadArgs { ssl_ptr, buf_ptr };
+    let args = SslReadArgs {
+        ssl_ptr,
+        buf_ptr,
+        readbytes_ptr: 0,
+    };
     let _ = SSL_READ_ARGS.insert(&tid, &args, 0);
 
     Ok(0)
 }
 
-/// Uretprobe on SSL_read — return
+/// Uprobe on SSL_read_ex(SSL *ssl, void *buf, size_t num, size_t *readbytes) — entry
+/// Like ssl_read_entry but also stashes the readbytes out-pointer (arg3).
+#[uprobe]
+pub fn ssl_read_ex_entry(ctx: ProbeContext) -> u32 {
+    match try_ssl_read_ex_entry(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_ssl_read_ex_entry(ctx: ProbeContext) -> Result<u32, u32> {
+    let ssl_ptr: u64 = match ctx.arg(0) {
+        Some(v) => v,
+        None => return Ok(0),
+    };
+    let buf_ptr: u64 = match ctx.arg(1) {
+        Some(v) => v,
+        None => return Ok(0),
+    };
+    let readbytes_ptr: u64 = match ctx.arg(3) {
+        Some(v) => v,
+        None => return Ok(0),
+    };
+
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = (pid_tgid >> 32) as u32;
+
+    // Check verdict: if BORING, don't stash
+    let key = TlsConnKey {
+        pid,
+        _pad: 0,
+        ssl_ptr,
+    };
+    if let Some(verdict) = unsafe { TLS_CONN_VERDICT.get(&key) } {
+        if *verdict == VERDICT_BORING {
+            return Ok(0);
+        }
+    }
+
+    // Stash args keyed by TID (readbytes_ptr != 0 signals _ex variant)
+    let tid = pid_tgid & 0xFFFFFFFF;
+    let args = SslReadArgs {
+        ssl_ptr,
+        buf_ptr,
+        readbytes_ptr,
+    };
+    let _ = SSL_READ_ARGS.insert(&tid, &args, 0);
+
+    Ok(0)
+}
+
+/// Uretprobe on SSL_read / SSL_read_ex — return
 /// Reads the buffer that SSL_read filled using the stashed pointer.
+/// For SSL_read_ex, reads *readbytes_ptr to get byte count (return value is just 0/1).
 #[uretprobe]
 pub fn ssl_read_ret(ctx: RetProbeContext) -> u32 {
     match try_ssl_read_ret(ctx) {
@@ -493,7 +559,9 @@ fn try_ssl_read_ret(ctx: RetProbeContext) -> Result<u32, u32> {
     };
     let _ = SSL_READ_ARGS.remove(&tid);
 
-    // Get return value (bytes read). ≤ 0 means error/EOF.
+    // Determine bytes read:
+    // - SSL_read: return value IS the byte count (> 0 means success)
+    // - SSL_read_ex: return value is 1=success, 0=failure; actual byte count is at *readbytes_ptr
     let retval: i32 = match ctx.ret() {
         Some(v) => v,
         None => return Ok(0),
@@ -502,15 +570,38 @@ fn try_ssl_read_ret(ctx: RetProbeContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
+    let bytes_read = if args.readbytes_ptr != 0 {
+        // SSL_read_ex: read the size_t value from *readbytes_ptr
+        let mut nbytes: usize = 0;
+        let ret = unsafe {
+            aya_ebpf_bindings::helpers::bpf_probe_read_user(
+                &mut nbytes as *mut usize as *mut core::ffi::c_void,
+                core::mem::size_of::<usize>() as u32,
+                args.readbytes_ptr as *const core::ffi::c_void,
+            )
+        };
+        if ret < 0 || nbytes == 0 {
+            return Ok(0);
+        }
+        nbytes as i32
+    } else {
+        // SSL_read: return value is the byte count
+        retval
+    };
+
     let pid = (pid_tgid >> 32) as u32;
 
-    // Check verdict again
+    // Check verdict again: BORING → skip, KILL → terminate
     let key = TlsConnKey {
         pid,
         _pad: 0,
         ssl_ptr: args.ssl_ptr,
     };
     if let Some(verdict) = unsafe { TLS_CONN_VERDICT.get(&key) } {
+        if *verdict == VERDICT_KILL {
+            unsafe { aya_ebpf_bindings::helpers::bpf_send_signal(9) }; // SIGKILL
+            return Ok(0);
+        }
         if *verdict == VERDICT_BORING {
             return Ok(0);
         }
@@ -538,7 +629,7 @@ fn try_ssl_read_ret(ctx: RetProbeContext) -> Result<u32, u32> {
         let _ = TLS_CONN_VERDICT.insert(&key, &pending, 0);
     }
 
-    let actual_len = (retval as usize).min(TLS_PAYLOAD_MAX);
+    let actual_len = (bytes_read as usize).min(TLS_PAYLOAD_MAX);
     let ret = unsafe {
         aya_ebpf_bindings::helpers::bpf_probe_read_user(
             scratch.payload.as_mut_ptr() as *mut core::ffi::c_void,

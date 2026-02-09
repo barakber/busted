@@ -52,6 +52,10 @@ fn bare_event() -> ProcessedEvent {
         agent_fingerprint: None,
         classifier_confidence: None,
         pii_detected: None,
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     }
 }
 

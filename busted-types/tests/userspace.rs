@@ -227,7 +227,7 @@ fn payload_bytes_max_len() {
 #[test]
 fn payload_bytes_overflow_clamps_to_max() {
     let mut e = TlsDataEvent::new();
-    e.payload_len = 1000; // exceeds TLS_PAYLOAD_MAX (512)
+    e.payload_len = 20000; // exceeds TLS_PAYLOAD_MAX (16384)
     assert_eq!(e.payload_bytes().len(), TLS_PAYLOAD_MAX);
 }
 
@@ -280,6 +280,10 @@ fn processed_event_serde_round_trip() {
         agent_fingerprint: Some(0xDEADBEEF),
         classifier_confidence: Some(0.9),
         pii_detected: Some(false),
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();
@@ -330,6 +334,10 @@ fn processed_event_skip_serializing_none_fields() {
         agent_fingerprint: None,
         classifier_confidence: None,
         pii_detected: None,
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();
@@ -395,6 +403,10 @@ fn processed_event_all_optional_fields_set() {
         agent_fingerprint: Some(0xCAFE),
         classifier_confidence: Some(0.95),
         pii_detected: Some(true),
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();

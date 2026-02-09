@@ -31,7 +31,7 @@ default = ["monitor", "policy"]
 monitor = ["dep:busted-agent"]
 ui = ["dep:busted-ui"]
 policy = ["dep:busted-opa"]
-full = ["monitor", "ui", "policy"]
+full = ["monitor", "ui", "policy", "tls", "opa", "ml", "k8s", "prometheus"]
 # Pass-through features for busted-agent
 k8s = ["busted-agent?/k8s"]
 ml = ["busted-agent?/ml"]

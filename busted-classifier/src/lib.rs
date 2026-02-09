@@ -94,6 +94,8 @@ pub mod llm;
 pub mod mcp;
 /// PII (personally identifiable information) scanning.
 pub mod pii;
+/// Protocol-specific LLM API request/response parsers (Anthropic, OpenAI, etc.).
+pub mod protocols;
 
 use fingerprint::AgentFingerprint;
 use llm::{LlmApiInfo, LlmStreamInfo};

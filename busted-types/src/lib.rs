@@ -120,8 +120,10 @@ impl IpAddress {
 /// Maximum length for SNI hostnames
 pub const SNI_MAX_LEN: usize = 128;
 
-/// Maximum payload bytes captured per TLS read/write
-pub const TLS_PAYLOAD_MAX: usize = 512;
+/// Maximum payload bytes captured per TLS read/write.
+/// 16 KB — enough to capture HTTP headers + most of the JSON body.
+/// The eBPF probe uses a PerCpuArray (not the stack) so this is safe.
+pub const TLS_PAYLOAD_MAX: usize = 16384;
 
 /// TLS handshake event captured by eBPF uprobe on SSL_ctrl
 #[repr(C)]
@@ -499,6 +501,21 @@ pub mod processed {
         /// Whether PII was detected in the payload.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub pii_detected: Option<bool>,
+
+        // --- Parsed LLM request fields (from protocol-specific parsers) ---
+        /// The most recent user message text from the parsed LLM request.
+        /// This is the primary field for content-based policy rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_user_message: Option<String>,
+        /// System prompt / instructions from the LLM request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_system_prompt: Option<String>,
+        /// All conversation messages as JSON array (serialized Vec<LlmMessage>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_messages_json: Option<String>,
+        /// Whether the request is streaming.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub llm_stream: Option<bool>,
     }
 }
 
@@ -674,7 +691,7 @@ mod tests {
         assert_eq!(CONTAINER_ID_LEN, 64);
         assert_eq!(CGROUP_PATH_LEN, 128);
         assert_eq!(SNI_MAX_LEN, 128);
-        assert_eq!(TLS_PAYLOAD_MAX, 512);
+        assert_eq!(TLS_PAYLOAD_MAX, 16384);
     }
 
     // -- Field mutation (validates #[repr(C)] has no overlap) --

@@ -50,6 +50,7 @@ async fn main() -> Result<()> {
         policy_dir: cli.policy_dir,
         #[cfg(not(feature = "opa"))]
         policy_dir: None,
+        policy_rule: None,
         #[cfg(feature = "prometheus")]
         metrics_port: cli.metrics_port,
         #[cfg(not(feature = "prometheus"))]

@@ -184,6 +184,10 @@ fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEve
         agent_fingerprint: Some(0xdeadbeef),
         classifier_confidence: if is_tls { Some(0.95) } else { None },
         pii_detected: if is_tls { Some(false) } else { None },
+        llm_user_message: None,
+        llm_system_prompt: None,
+        llm_messages_json: None,
+        llm_stream: None,
     }
 }
 

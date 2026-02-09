@@ -20,6 +20,7 @@ pub fn run(args: MonitorArgs) -> Result<()> {
             enforce: args.enforce,
             output: args.output,
             policy_dir: args.policy_dir,
+            policy_rule: args.rule,
             metrics_port: args.metrics_port,
         };
 

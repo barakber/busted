@@ -146,6 +146,10 @@ fn processed_event_strategy() -> impl Strategy<Value = ProcessedEvent> {
                 agent_fingerprint: None,
                 classifier_confidence: None,
                 pii_detected,
+                llm_user_message: None,
+                llm_system_prompt: None,
+                llm_messages_json: None,
+                llm_stream: None,
             }
         })
 }
@@ -407,6 +411,8 @@ decision = "allow" { input.provider == data.ok[_] }
             content_class: None, llm_provider: None, llm_endpoint: None, llm_model: None,
             mcp_method: None, mcp_category: None, agent_sdk: None, agent_fingerprint: None,
             classifier_confidence: None, pii_detected: None,
+            llm_user_message: None, llm_system_prompt: None,
+            llm_messages_json: None, llm_stream: None,
         };
 
         let d = engine.evaluate(&event).unwrap();

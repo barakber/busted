@@ -55,6 +55,7 @@ pub struct AgentConfig {
     pub enforce: bool,
     pub output: String,
     pub policy_dir: Option<PathBuf>,
+    pub policy_rule: Option<String>,
     pub metrics_port: u16,
 }
 
@@ -297,6 +298,14 @@ struct EventOutput {
     classifier_confidence: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pii_detected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_user_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_messages_json: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    llm_stream: Option<bool>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -339,6 +348,10 @@ impl From<&ProcessedEvent> for EventOutput {
             agent_fingerprint: e.agent_fingerprint,
             classifier_confidence: e.classifier_confidence,
             pii_detected: e.pii_detected,
+            llm_user_message: e.llm_user_message.clone(),
+            llm_system_prompt: e.llm_system_prompt.clone(),
+            llm_messages_json: e.llm_messages_json.clone(),
+            llm_stream: e.llm_stream,
         }
     }
 }
@@ -748,51 +761,110 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     // Attach TLS uprobes (behind tls feature flag)
     #[cfg(feature = "tls")]
     {
+        // Collect all SSL targets: system libssl + binaries with statically-linked OpenSSL
+        let mut ssl_targets: Vec<PathBuf> = Vec::new();
         if let Some(libssl_path) = tls::detect_libssl_path() {
-            // SNI extraction (existing)
+            ssl_targets.push(libssl_path);
+        }
+        for target in tls::detect_additional_ssl_targets() {
+            if !ssl_targets.contains(&target) {
+                ssl_targets.push(target);
+            }
+        }
+
+        if ssl_targets.is_empty() {
+            warn!("No SSL libraries found, TLS probes disabled");
+        } else {
+            info!(
+                "Found {} SSL target(s) for uprobe attachment",
+                ssl_targets.len()
+            );
+
+            // Load each eBPF program once, then attach to all targets
             let prog: &mut UProbe = bpf.program_mut("ssl_ctrl_sni").unwrap().try_into()?;
             prog.load()?;
-            match prog.attach(Some("SSL_ctrl"), 0, &libssl_path, None) {
-                Ok(_) => info!(
-                    "TLS uprobe attached to SSL_ctrl at {}",
-                    libssl_path.display()
-                ),
-                Err(e) => warn!("Failed to attach TLS uprobe: {}", e),
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_ctrl"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_ctrl at {}", target.display()),
+                    Err(e) => warn!("Failed to attach SSL_ctrl at {}: {}", target.display(), e),
+                }
             }
 
-            // SSL_write plaintext capture
             let prog: &mut UProbe = bpf.program_mut("ssl_write_entry").unwrap().try_into()?;
             prog.load()?;
-            match prog.attach(Some("SSL_write"), 0, &libssl_path, None) {
-                Ok(_) => info!("TLS uprobe attached to SSL_write"),
-                Err(e) => warn!("Failed to attach SSL_write uprobe: {}", e),
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_write"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_write at {}", target.display()),
+                    Err(e) => warn!("Failed to attach SSL_write at {}: {}", target.display(), e),
+                }
+                // SSL_write_ex has compatible first 3 args — reuse same eBPF program
+                match prog.attach(Some("SSL_write_ex"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_write_ex at {}", target.display()),
+                    Err(e) => warn!(
+                        "Failed to attach SSL_write_ex at {}: {}",
+                        target.display(),
+                        e
+                    ),
+                }
             }
 
-            // SSL_read entry (stash args)
             let prog: &mut UProbe = bpf.program_mut("ssl_read_entry").unwrap().try_into()?;
             prog.load()?;
-            match prog.attach(Some("SSL_read"), 0, &libssl_path, None) {
-                Ok(_) => info!("TLS uprobe attached to SSL_read"),
-                Err(e) => warn!("Failed to attach SSL_read uprobe: {}", e),
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_read"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_read at {}", target.display()),
+                    Err(e) => warn!("Failed to attach SSL_read at {}: {}", target.display(), e),
+                }
             }
 
-            // SSL_read return (read buffer)
+            // SSL_read_ex has a 4th arg (size_t *readbytes) — separate entry probe stashes it
+            let prog: &mut UProbe = bpf.program_mut("ssl_read_ex_entry").unwrap().try_into()?;
+            prog.load()?;
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_read_ex"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_read_ex at {}", target.display()),
+                    Err(e) => warn!(
+                        "Failed to attach SSL_read_ex at {}: {}",
+                        target.display(),
+                        e
+                    ),
+                }
+            }
+
+            // ssl_read_ret handles both SSL_read and SSL_read_ex (checks readbytes_ptr)
             let prog: &mut UProbe = bpf.program_mut("ssl_read_ret").unwrap().try_into()?;
             prog.load()?;
-            match prog.attach(Some("SSL_read"), 0, &libssl_path, None) {
-                Ok(_) => info!("TLS uretprobe attached to SSL_read"),
-                Err(e) => warn!("Failed to attach SSL_read uretprobe: {}", e),
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_read"), 0, target, None) {
+                    Ok(_) => info!("TLS uretprobe: SSL_read at {}", target.display()),
+                    Err(e) => {
+                        warn!(
+                            "Failed to attach SSL_read ret at {}: {}",
+                            target.display(),
+                            e
+                        )
+                    }
+                }
+                match prog.attach(Some("SSL_read_ex"), 0, target, None) {
+                    Ok(_) => info!("TLS uretprobe: SSL_read_ex at {}", target.display()),
+                    Err(e) => {
+                        warn!(
+                            "Failed to attach SSL_read_ex ret at {}: {}",
+                            target.display(),
+                            e
+                        )
+                    }
+                }
             }
 
-            // SSL_free cleanup
             let prog: &mut UProbe = bpf.program_mut("ssl_free_cleanup").unwrap().try_into()?;
             prog.load()?;
-            match prog.attach(Some("SSL_free"), 0, &libssl_path, None) {
-                Ok(_) => info!("TLS uprobe attached to SSL_free"),
-                Err(e) => warn!("Failed to attach SSL_free uprobe: {}", e),
+            for target in &ssl_targets {
+                match prog.attach(Some("SSL_free"), 0, target, None) {
+                    Ok(_) => info!("TLS uprobe: SSL_free at {}", target.display()),
+                    Err(e) => warn!("Failed to attach SSL_free at {}: {}", target.display(), e),
+                }
             }
-        } else {
-            warn!("libssl.so not found, TLS probes disabled");
         }
     }
 
@@ -848,11 +920,15 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf)?;
     let enforce = config.enforce;
 
-    // Initialize OPA policy engine (if configured)
+    // Initialize OPA policy engine (if configured via --policy-dir or --rule)
     #[cfg(feature = "opa")]
-    let opa_engine: Option<busted_opa::PolicyEngine> = config.policy_dir.as_ref().map(|dir| {
-        busted_opa::PolicyEngine::new(dir).expect("Failed to initialize OPA policy engine")
-    });
+    let opa_engine: Option<busted_opa::PolicyEngine> = if let Some(ref dir) = config.policy_dir {
+        Some(busted_opa::PolicyEngine::new(dir).expect("Failed to initialize OPA policy engine"))
+    } else if let Some(ref rule) = config.policy_rule {
+        Some(busted_opa::PolicyEngine::from_rego(rule).expect("Failed to parse inline Rego rule"))
+    } else {
+        None
+    };
 
     #[cfg(feature = "k8s")]
     let k8s_cache_clone = k8s_cache.clone();
@@ -922,8 +998,35 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                     // Get SNI hint for this PID
                     let sni_hint = sni_cache.get(tls_data.pid);
 
+                    // SNI fast path: if SNI matches a known LLM provider, mark
+                    // interesting immediately. This handles HTTP/2 connections
+                    // where the classifier can't parse binary framing.
+                    if !tls_conn_tracker.is_decided(tls_data.pid, tls_data.ssl_ptr) {
+                        if let Some(sni) = sni_hint {
+                            if tls::classify_by_sni(sni).is_some() {
+                                tls_conn_tracker.set_verdict(tls_data.pid, tls_data.ssl_ptr, true);
+                                let _ = tls_verdict_map.insert(key, 1u8, 0);
+                                #[cfg(feature = "prometheus")]
+                                metrics::record_tls_verdict("interesting");
+                                info!(
+                                    "TLS: PID {} ({}) -> SNI {} matches LLM provider, tracking",
+                                    tls_data.pid,
+                                    tls_data.process_name(),
+                                    sni,
+                                );
+                            }
+                        }
+                    }
+
                     if tls_conn_tracker.is_decided(tls_data.pid, tls_data.ssl_ptr) {
-                        // Already decided interesting — classify and forward
+                        // Already decided interesting — accumulate and forward
+                        tls_conn_tracker.append_payload(
+                            tls_data.pid,
+                            tls_data.ssl_ptr,
+                            tls_data.direction,
+                            tls_data.payload_bytes(),
+                        );
+
                         let classification = tls::classify_payload(
                             tls_data.payload_bytes(),
                             tls_data.direction,
@@ -937,10 +1040,52 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                             tls_data.payload_len,
                         );
 
-                        #[cfg(feature = "opa")]
                         let mut processed = events::from_tls_data_event(&tls_data, &classification);
-                        #[cfg(not(feature = "opa"))]
-                        let processed = events::from_tls_data_event(&tls_data, &classification);
+                        // Replace per-chunk payload with accumulated flow for the
+                        // matching direction (write flow for outbound, read for inbound)
+                        let flow = if tls_data.direction == 0 {
+                            tls_conn_tracker.flow_payload(tls_data.pid, tls_data.ssl_ptr)
+                        } else {
+                            tls_conn_tracker.read_flow_payload(tls_data.pid, tls_data.ssl_ptr)
+                        };
+                        if let Some(f) = flow {
+                            processed.tls_payload = Some(f);
+                        }
+                        // Enrich with SNI: set provider from SNI when classifier
+                        // can't determine it (e.g. HTTP/2 binary framing)
+                        if let Some(sni) = sni_hint {
+                            processed.sni = Some(sni.to_string());
+                            if processed.llm_provider.is_none() {
+                                if let Some(provider) = tls::classify_by_sni(sni) {
+                                    processed.llm_provider = Some(provider.to_string());
+                                    processed.provider = Some(provider.to_string());
+                                }
+                            }
+                        }
+
+                        // Parse the LLM request body (Anthropic/OpenAI protocol)
+                        // to extract structured fields for policy evaluation
+                        if let Some(ref payload) = processed.tls_payload {
+                            if let Some(parsed) =
+                                busted_classifier::protocols::parse_llm_request(payload, sni_hint)
+                            {
+                                processed.llm_user_message = parsed.user_message;
+                                processed.llm_system_prompt = parsed.system_prompt;
+                                processed.llm_stream = Some(parsed.stream);
+                                if let Ok(json) = serde_json::to_string(&parsed.messages) {
+                                    processed.llm_messages_json = Some(json);
+                                }
+                                // Fill in model/provider from parsed body if classifier missed them
+                                if processed.llm_model.is_none() {
+                                    processed.llm_model = parsed.model;
+                                }
+                                if processed.llm_provider.is_none() {
+                                    processed.llm_provider = Some(parsed.provider.clone());
+                                    processed.provider = Some(parsed.provider);
+                                }
+                            }
+                        }
+
                         #[cfg(feature = "opa")]
                         if let Some(ref mut engine) = opa_engine {
                             let opa_start = Instant::now();
@@ -954,6 +1099,30 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                         decision.action.as_str(),
                                     );
                                     processed.policy = Some(decision.action.as_str().to_string());
+                                    if enforce {
+                                        match decision.action {
+                                            busted_opa::Action::Deny => {
+                                                warn!(
+                                                    "OPA DENY for PID {} ({}), KILLING process",
+                                                    tls_data.pid,
+                                                    tls_data.process_name(),
+                                                );
+                                                // Write KILL verdict so eBPF sends SIGKILL
+                                                // on any future SSL call from this connection
+                                                let _ = tls_verdict_map.insert(key, 3u8, 0);
+                                                // Also kill immediately from userspace
+                                                unsafe {
+                                                    libc::kill(tls_data.pid as i32, libc::SIGKILL);
+                                                }
+                                            }
+                                            busted_opa::Action::Audit => {
+                                                if let Ok(mut pmap) = policy_map.try_lock() {
+                                                    let _ = pmap.insert(tls_data.pid, 2, 0);
+                                                }
+                                            }
+                                            busted_opa::Action::Allow => {}
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     #[cfg(feature = "prometheus")]
@@ -974,6 +1143,12 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                         if classification.is_interesting {
                             // Found LLM/MCP traffic!
                             tls_conn_tracker.set_verdict(tls_data.pid, tls_data.ssl_ptr, true);
+                            tls_conn_tracker.append_payload(
+                                tls_data.pid,
+                                tls_data.ssl_ptr,
+                                tls_data.direction,
+                                tls_data.payload_bytes(),
+                            );
                             let _ = tls_verdict_map.insert(key, 1u8, 0); // INTERESTING
 
                             #[cfg(feature = "prometheus")]
@@ -991,11 +1166,51 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                 chunk_num,
                             );
 
-                            #[cfg(feature = "opa")]
                             let mut processed =
                                 events::from_tls_data_event(&tls_data, &classification);
-                            #[cfg(not(feature = "opa"))]
-                            let processed = events::from_tls_data_event(&tls_data, &classification);
+                            // Replace per-chunk payload with accumulated flow
+                            let flow = if tls_data.direction == 0 {
+                                tls_conn_tracker.flow_payload(tls_data.pid, tls_data.ssl_ptr)
+                            } else {
+                                tls_conn_tracker.read_flow_payload(tls_data.pid, tls_data.ssl_ptr)
+                            };
+                            if let Some(f) = flow {
+                                processed.tls_payload = Some(f);
+                            }
+                            // Enrich with SNI
+                            if let Some(sni) = sni_hint {
+                                processed.sni = Some(sni.to_string());
+                                if processed.llm_provider.is_none() {
+                                    if let Some(provider) = tls::classify_by_sni(sni) {
+                                        processed.llm_provider = Some(provider.to_string());
+                                        processed.provider = Some(provider.to_string());
+                                    }
+                                }
+                            }
+
+                            // Parse the LLM request body
+                            if let Some(ref payload) = processed.tls_payload {
+                                if let Some(parsed) =
+                                    busted_classifier::protocols::parse_llm_request(
+                                        payload, sni_hint,
+                                    )
+                                {
+                                    processed.llm_user_message = parsed.user_message;
+                                    processed.llm_system_prompt = parsed.system_prompt;
+                                    processed.llm_stream = Some(parsed.stream);
+                                    if let Ok(json) = serde_json::to_string(&parsed.messages) {
+                                        processed.llm_messages_json = Some(json);
+                                    }
+                                    if processed.llm_model.is_none() {
+                                        processed.llm_model = parsed.model;
+                                    }
+                                    if processed.llm_provider.is_none() {
+                                        processed.llm_provider = Some(parsed.provider.clone());
+                                        processed.provider = Some(parsed.provider);
+                                    }
+                                }
+                            }
+
                             #[cfg(feature = "opa")]
                             if let Some(ref mut engine) = opa_engine {
                                 let opa_start = Instant::now();
@@ -1010,6 +1225,30 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                         );
                                         processed.policy =
                                             Some(decision.action.as_str().to_string());
+                                        if enforce {
+                                            match decision.action {
+                                                busted_opa::Action::Deny => {
+                                                    warn!(
+                                                        "OPA DENY for PID {} ({}), KILLING process",
+                                                        tls_data.pid,
+                                                        tls_data.process_name(),
+                                                    );
+                                                    let _ = tls_verdict_map.insert(key, 3u8, 0);
+                                                    unsafe {
+                                                        libc::kill(
+                                                            tls_data.pid as i32,
+                                                            libc::SIGKILL,
+                                                        );
+                                                    }
+                                                }
+                                                busted_opa::Action::Audit => {
+                                                    if let Ok(mut pmap) = policy_map.try_lock() {
+                                                        let _ = pmap.insert(tls_data.pid, 2, 0);
+                                                    }
+                                                }
+                                                busted_opa::Action::Allow => {}
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         #[cfg(feature = "prometheus")]

@@ -111,36 +111,38 @@ fn build_ebpf(opts: BuildEbpfOptions) -> Result<()> {
 }
 
 fn build_userspace(release: bool, features: Option<&str>) -> Result<()> {
-    let mut args = vec!["build", "--package", "busted-agent"];
+    // Build busted-cli with full features (produces the `busted` binary)
+    let mut args = vec!["build", "--package", "busted-cli", "--features", "full"];
 
     if release {
         args.push("--release");
     }
 
+    // If extra features requested, they're already covered by "full"
     let features_owned;
     if let Some(f) = features {
-        args.push("--features");
-        features_owned = f.to_string();
-        args.push(&features_owned);
+        // Merge with "full" — comma-separated
+        features_owned = format!("full,{}", f);
+        args[4] = &features_owned;
     }
 
     let status = Command::new("cargo")
         .args(&args)
         .status()
-        .context("Failed to build userspace agent")?;
+        .context("Failed to build busted CLI")?;
 
     if !status.success() {
-        anyhow::bail!("Failed to build userspace agent");
+        anyhow::bail!("Failed to build busted CLI");
     }
 
-    println!("✓ Userspace agent built successfully");
+    println!("✓ Busted CLI built successfully (with full features)");
 
     Ok(())
 }
 
 fn run(opts: RunOptions) -> Result<()> {
     let profile = if opts.release { "release" } else { "debug" };
-    let bin_path = PathBuf::from(format!("target/{}/busted-agent", profile));
+    let bin_path = PathBuf::from(format!("target/{}/busted", profile));
 
     let mut cmd = Command::new(bin_path);
     cmd.args(&opts.run_args);
