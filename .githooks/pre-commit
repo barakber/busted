@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+# Create eBPF stub if not built (needed for include_bytes in busted-agent)
+mkdir -p target/bpfel-unknown-none/debug target/bpfel-unknown-none/release
+[ -f target/bpfel-unknown-none/debug/busted-ebpf ] || touch target/bpfel-unknown-none/debug/busted-ebpf
+[ -f target/bpfel-unknown-none/release/busted-ebpf ] || touch target/bpfel-unknown-none/release/busted-ebpf
+
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 

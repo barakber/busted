@@ -12,7 +12,7 @@ keywords = ["machine-learning", "llm", "traffic-analysis", "classification", "ai
 categories = ["science", "network-programming"]
 
 [dependencies]
-busted-types = { path = "../busted-types", features = ["user"] }
+busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
 ndarray = "0.15"
 linfa = "0.7"
 linfa-trees = "0.7"
