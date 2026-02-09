@@ -510,7 +510,7 @@
 <a href=#510 id=510 data-nosnippet>510</a>        <span class="doccomment">/// System prompt / instructions from the LLM request.
 <a href=#511 id=511 data-nosnippet>511</a>        </span><span class="attr">#[serde(default, skip_serializing_if = <span class="string">"Option::is_none"</span>)]
 <a href=#512 id=512 data-nosnippet>512</a>        </span><span class="kw">pub </span>llm_system_prompt: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#513 id=513 data-nosnippet>513</a>        <span class="doccomment">/// All conversation messages as JSON array (serialized Vec&lt;LlmMessage&gt;).
+<a href=#513 id=513 data-nosnippet>513</a>        <span class="doccomment">/// All conversation messages as JSON array (serialized `Vec&lt;LlmMessage&gt;`).
 <a href=#514 id=514 data-nosnippet>514</a>        </span><span class="attr">#[serde(default, skip_serializing_if = <span class="string">"Option::is_none"</span>)]
 <a href=#515 id=515 data-nosnippet>515</a>        </span><span class="kw">pub </span>llm_messages_json: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#516 id=516 data-nosnippet>516</a>        <span class="doccomment">/// Whether the request is streaming.
