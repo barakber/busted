@@ -159,12 +159,9 @@ fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEve
             None
         },
         tls_details: if is_tls {
-            scenario.model.map(|m| {
-                format!(
-                    "{} model={}",
-                    scenario.provider, m
-                )
-            })
+            scenario
+                .model
+                .map(|m| format!("{} model={}", scenario.provider, m))
         } else {
             None
         },

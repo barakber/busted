@@ -1,11 +1,17 @@
 /// PII detection flags.
 #[derive(Debug, Clone, Default)]
 pub struct PiiFlags {
+    /// Email address detected.
     pub has_email: bool,
+    /// Phone number detected.
     pub has_phone: bool,
+    /// Credit card number detected.
     pub has_credit_card: bool,
+    /// Social Security Number detected.
     pub has_ssn: bool,
+    /// API key or bearer token detected.
     pub has_api_key: bool,
+    /// Total number of PII matches found.
     pub match_count: u32,
 }
 

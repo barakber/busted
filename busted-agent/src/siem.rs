@@ -25,12 +25,10 @@ impl OutputSink {
             Some(OutputSink::File {
                 path: PathBuf::from(path),
             })
-        } else if let Some(host) = spec.strip_prefix("syslog:") {
-            Some(OutputSink::Syslog {
+        } else {
+            spec.strip_prefix("syslog:").map(|host| OutputSink::Syslog {
                 host: host.to_string(),
             })
-        } else {
-            None
         }
     }
 }

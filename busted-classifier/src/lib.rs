@@ -1,13 +1,55 @@
-//! `busted-classifier` — Standalone content classification for decrypted TLS payloads.
+//! Standalone content classifier for decrypted TLS payloads.
 //!
-//! Performs structured HTTP parsing, JSON analysis, LLM endpoint matching,
-//! MCP protocol detection, agent fingerprinting, and optional PII detection.
+//! `busted-classifier` is a multi-layer analysis pipeline that classifies intercepted
+//! network traffic as LLM API calls, MCP protocol messages, or generic HTTP. It operates
+//! on raw byte slices without any connection state, making it safe to call from any context.
+//!
+//! # Architecture
+//!
+//! Classification proceeds through four layers:
+//!
+//! 1. **Protocol detection** — HTTP/1.1 request/response parsing (via [`nom`]),
+//!    HTTP/2 binary framing detection, and SSE stream identification.
+//! 2. **Content classification** — Matches against known LLM API endpoints
+//!    (OpenAI, Anthropic, Google, Azure, AWS Bedrock, Cohere, Mistral, Groq, etc.)
+//!    and detects MCP JSON-RPC 2.0 methods.
+//! 3. **Agent fingerprinting** — Extracts SDK name/version from `User-Agent` headers,
+//!    model parameters from JSON bodies, and computes a behavioral signature hash.
+//! 4. **PII detection** — Scans for email addresses, credit card numbers, SSNs,
+//!    phone numbers, and API keys (requires `pii` feature).
+//!
+//! # Usage
+//!
+//! ```
+//! use busted_classifier::{classify, Direction};
+//!
+//! let payload = b"POST /v1/chat/completions HTTP/1.1\r\n\
+//!     Host: api.openai.com\r\n\
+//!     Content-Type: application/json\r\n\r\n\
+//!     {\"model\":\"gpt-4\",\"messages\":[]}";
+//!
+//! let result = classify(payload, Direction::Write, None);
+//! assert!(result.is_interesting);
+//! assert_eq!(result.provider(), Some("OpenAI"));
+//! assert_eq!(result.model(), Some("gpt-4"));
+//! ```
+//!
+//! # Feature Flags
+//!
+//! - **`pii`** — Enables PII detection via regex scanning (adds `regex` dependency).
+//!   When disabled, [`PiiFlags`] fields are always `false`.
 
+/// Agent/SDK fingerprinting from User-Agent headers and request structure.
 pub mod fingerprint;
+/// HTTP/1.1 request and response parsing via [`nom`].
 pub mod http;
+/// Streaming JSON field extraction (handles truncated payloads).
 pub mod json;
+/// LLM API endpoint matching for known providers.
 pub mod llm;
+/// MCP (Model Context Protocol) JSON-RPC 2.0 detection.
 pub mod mcp;
+/// PII (personally identifiable information) scanning.
 pub mod pii;
 
 use fingerprint::AgentFingerprint;
@@ -15,25 +57,32 @@ use llm::{LlmApiInfo, LlmStreamInfo};
 use mcp::McpInfo;
 use pii::PiiFlags;
 
-// Re-export key types
 pub use fingerprint::{ModelParams, SdkInfo};
 pub use mcp::{McpCategory, McpMsgType};
 
 /// Direction of TLS data flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Outbound data (client to server, e.g. `SSL_write`).
     Write,
+    /// Inbound data (server to client, e.g. `SSL_read`).
     Read,
 }
 
 /// Layer 1: Protocol detection result.
 #[derive(Debug, Clone)]
 pub enum Protocol {
+    /// HTTP/1.1 request with parsed headers and body offset.
     Http1Request(http::HttpRequestInfo),
+    /// HTTP/1.1 response with parsed headers and body offset.
     Http1Response(http::HttpResponseInfo),
+    /// Server-Sent Events stream (`data: ...` lines).
     Sse,
+    /// HTTP/2 binary framing (connection preface or frames).
     Http2Binary,
+    /// Non-text binary data.
     Binary,
+    /// Could not determine protocol.
     Unknown,
 }
 
@@ -163,21 +212,13 @@ fn classify_http_request(
     // Check for MCP first (JSON-RPC 2.0 with MCP methods)
     if let Some(mcp_info) = mcp::classify(jf) {
         let fp = fingerprint::build_fingerprint(req, jf);
-        return (
-            Some(ContentClass::Mcp(mcp_info)),
-            Some(fp),
-            0.95,
-        );
+        return (Some(ContentClass::Mcp(mcp_info)), Some(fp), 0.95);
     }
 
     // Check for LLM API endpoint
     if let Some(llm_info) = llm::match_request_with_body(req, sni_hint, jf) {
         let fp = fingerprint::build_fingerprint(req, jf);
-        return (
-            Some(ContentClass::LlmApi(llm_info)),
-            Some(fp),
-            0.9,
-        );
+        return (Some(ContentClass::LlmApi(llm_info)), Some(fp), 0.9);
     }
 
     // Generic JSON-RPC (non-MCP)
@@ -197,11 +238,7 @@ fn classify_http_request(
             model: jf.model.clone(),
             streaming: jf.stream,
         };
-        return (
-            Some(ContentClass::LlmApi(info)),
-            Some(fp),
-            confidence,
-        );
+        return (Some(ContentClass::LlmApi(info)), Some(fp), confidence);
     }
 
     // Generic HTTP

@@ -60,11 +60,10 @@ pub async fn run_socket_server(mut rx: broadcast::Receiver<ProcessedEvent>) {
                     loop {
                         match client_rx.recv().await {
                             Ok(event) => {
-                                let mut line =
-                                    match serde_json::to_string(&event) {
-                                        Ok(s) => s,
-                                        Err(_) => continue,
-                                    };
+                                let mut line = match serde_json::to_string(&event) {
+                                    Ok(s) => s,
+                                    Err(_) => continue,
+                                };
                                 line.push('\n');
                                 if stream.write_all(line.as_bytes()).await.is_err() {
                                     break;

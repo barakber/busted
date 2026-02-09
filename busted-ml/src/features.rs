@@ -64,7 +64,11 @@ impl FeatureExtractor {
             let a = triple[0].symbol.encode() as u64;
             let b = triple[1].symbol.encode() as u64;
             let c = triple[2].symbol.encode() as u64;
-            let hash = fnv1a_u64(a.wrapping_mul(32761).wrapping_add(b.wrapping_mul(181)).wrapping_add(c));
+            let hash = fnv1a_u64(
+                a.wrapping_mul(32761)
+                    .wrapping_add(b.wrapping_mul(181))
+                    .wrapping_add(c),
+            );
             let bin = (hash as usize) % TRIGRAM_BINS;
             self.scratch[SYMBOL_SPACE + BIGRAM_BINS + bin] += 1.0 / (n - 2.0).max(1.0);
         }
@@ -79,7 +83,8 @@ impl FeatureExtractor {
         if !deltas.is_empty() {
             deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let mean = deltas.iter().sum::<f64>() / deltas.len() as f64;
-            let variance = deltas.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / deltas.len() as f64;
+            let variance =
+                deltas.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / deltas.len() as f64;
             let std_dev = variance.sqrt();
             let min = deltas[0];
             let max = deltas[deltas.len() - 1];
@@ -141,7 +146,7 @@ impl FeatureExtractor {
             .sum::<f64>()
             / n
             / 1_000_000.0; // normalize
-        // Zero-byte fraction
+                           // Zero-byte fraction
         self.scratch[bytes_offset + 4] = zero_count as f64 / n;
         // Total bytes (normalized to KB)
         self.scratch[bytes_offset + 5] = (total_send + total_recv) / 1024.0;
@@ -153,7 +158,7 @@ impl FeatureExtractor {
         self.scratch[conn_offset] = unique_ips.len() as f64 / n.max(1.0); // IP diversity
         self.scratch[conn_offset + 1] = unique_ports.len() as f64 / n.max(1.0); // Port diversity
         self.scratch[conn_offset + 2] = unique_ips.len() as f64; // Unique dst count
-        // Connection reuse ratio: events / unique destinations
+                                                                 // Connection reuse ratio: events / unique destinations
         self.scratch[conn_offset + 3] = if unique_ips.is_empty() {
             0.0
         } else {
@@ -168,7 +173,8 @@ impl FeatureExtractor {
         let mut burst_bytes = syms.first().map_or(0, |ts| ts.bytes);
         let mut max_gap_ms: f64 = 0.0;
         for pair in syms.windows(2) {
-            let dt_ms = pair[1].timestamp_ns.saturating_sub(pair[0].timestamp_ns) as f64 / 1_000_000.0;
+            let dt_ms =
+                pair[1].timestamp_ns.saturating_sub(pair[0].timestamp_ns) as f64 / 1_000_000.0;
             max_gap_ms = max_gap_ms.max(dt_ms);
             if dt_ms < burst_gap_ms {
                 burst_len += 1;

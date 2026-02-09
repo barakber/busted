@@ -53,7 +53,11 @@ impl PatternDiscovery {
         let clusterer = hdbscan::Hdbscan::new(&self.feature_buffer, hyper_params);
         match clusterer.cluster() {
             Ok(labels) => {
-                let n_clusters = labels.iter().filter(|&&l| l >= 0).max().map_or(0, |m| m + 1);
+                let n_clusters = labels
+                    .iter()
+                    .filter(|&&l| l >= 0)
+                    .max()
+                    .map_or(0, |m| m + 1);
                 log::info!(
                     "HDBSCAN: {} clusters found in {} samples ({} noise)",
                     n_clusters,

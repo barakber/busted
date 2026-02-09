@@ -14,10 +14,7 @@ pub fn init(port: u16) -> Result<()> {
         .context("Failed to install Prometheus metrics exporter")?;
 
     // Register metric descriptions
-    describe_counter!(
-        "busted_events_total",
-        "Total number of events processed"
-    );
+    describe_counter!("busted_events_total", "Total number of events processed");
     describe_counter!(
         "busted_events_bytes_total",
         "Total bytes observed across events"
@@ -26,14 +23,8 @@ pub fn init(port: u16) -> Result<()> {
         "busted_providers_detected",
         "Number of unique LLM providers detected"
     );
-    describe_gauge!(
-        "busted_active_pids",
-        "Number of PIDs with LLM traffic"
-    );
-    describe_gauge!(
-        "busted_dns_resolutions",
-        "Number of resolved provider IPs"
-    );
+    describe_gauge!("busted_active_pids", "Number of PIDs with LLM traffic");
+    describe_gauge!("busted_dns_resolutions", "Number of resolved provider IPs");
     describe_counter!(
         "busted_policy_decisions_total",
         "Total policy decisions by type"
@@ -42,10 +33,7 @@ pub fn init(port: u16) -> Result<()> {
         "busted_tls_connections_tracked",
         "Number of active TLS connections being tracked"
     );
-    describe_counter!(
-        "busted_tls_verdicts_total",
-        "TLS connection verdicts"
-    );
+    describe_counter!("busted_tls_verdicts_total", "TLS connection verdicts");
     describe_histogram!(
         "busted_classifier_confidence",
         "Classifier confidence scores"
@@ -107,5 +95,6 @@ pub fn record_classifier_confidence(confidence: f32) {
 /// Record an ML behavioral classification.
 #[cfg_attr(not(feature = "ml"), allow(dead_code))]
 pub fn record_ml_classification(behavior_class: &str) {
-    counter!("busted_ml_classifications_total", "behavior_class" => behavior_class.to_string()).increment(1);
+    counter!("busted_ml_classifications_total", "behavior_class" => behavior_class.to_string())
+        .increment(1);
 }

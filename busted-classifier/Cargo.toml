@@ -1,10 +1,15 @@
 [package]
 name = "busted-classifier"
+description = "Content classifier for LLM API and MCP protocol detection in TLS payloads"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["llm", "mcp", "classifier", "security", "ai"]
+categories = ["network-programming", "parser-implementations"]
 
 [dependencies]
 nom = "7"

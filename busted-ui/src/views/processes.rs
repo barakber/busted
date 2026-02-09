@@ -16,7 +16,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
         return;
     }
 
-    llm_processes.sort_by(|a, b| b.event_count.cmp(&a.event_count));
+    llm_processes.sort_by_key(|b| std::cmp::Reverse(b.event_count));
 
     egui::Grid::new("process_grid")
         .num_columns(6)

@@ -1,3 +1,51 @@
+//! ML behavioral traffic classifier for LLM communication patterns.
+//!
+//! `busted-ml` uses online machine learning to identify LLM API traffic from network
+//! behavior patterns, complementing the content-based classification in `busted-classifier`.
+//! It can detect LLM traffic even when payload inspection is unavailable (e.g., certificate
+//! pinning, HTTP/2 multiplexing) by learning from temporal and statistical features of
+//! network event sequences.
+//!
+//! # Architecture
+//!
+//! The classifier operates on a per-PID sliding window of [`busted_types::NetworkEvent`]s:
+//!
+//! 1. **Symbolization** — Each event is mapped to a compact symbol encoding event type,
+//!    byte-size bucket, and port class (180 possible symbols).
+//! 2. **Feature extraction** — A 352-dimensional feature vector is computed from unigram,
+//!    bigram, and trigram histograms, timing statistics, byte patterns, connection
+//!    diversity, burst analysis, and entropy measures.
+//! 3. **Supervised classification** — A bagged ensemble of 100 decision trees (random
+//!    forest via [`linfa`]) is trained online from IP-labeled ground truth.
+//! 4. **Unsupervised discovery** — [`hdbscan`] clustering detects novel traffic patterns
+//!    not captured by the supervised model.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use busted_ml::MlClassifier;
+//! use std::time::Duration;
+//!
+//! let mut classifier = MlClassifier::new();
+//!
+//! // Feed network events as they arrive:
+//! // let result = classifier.process_event(&event, Some("OpenAI"));
+//! // if let Some(identity) = result {
+//! //     println!("class={}, confidence={}", identity.class, identity.confidence);
+//! // }
+//!
+//! // Periodically garbage-collect idle PID windows:
+//! classifier.gc_idle_pids(Duration::from_secs(300));
+//! ```
+//!
+//! # Key Types
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | [`MlClassifier`] | Top-level coordinator — owns windows, classifier, and discovery |
+//! | [`BehaviorClass`] | Classification result enum (`LlmApi`, `GenericHttps`, `DnsHeavy`, `Unknown`) |
+//! | [`BehaviorIdentity`] | Full result with class, confidence, cluster ID, and signature |
+
 mod classifier;
 mod discovery;
 mod features;
@@ -21,9 +69,13 @@ use window::{EventWindow, TimedSymbol, WindowConfig};
 #[derive(Clone, Debug, Serialize)]
 #[allow(dead_code)]
 pub enum BehaviorClass {
+    /// Traffic pattern matches a known LLM API provider.
     LlmApi(String),
+    /// Generic HTTPS traffic (port 443, no LLM indicators).
     GenericHttps,
+    /// DNS-heavy traffic pattern.
     DnsHeavy,
+    /// Could not classify the traffic pattern.
     Unknown,
 }
 
@@ -41,8 +93,9 @@ impl std::fmt::Display for BehaviorClass {
 /// Full behavioral identity for a traffic window.
 #[derive(Clone, Debug, Serialize)]
 pub struct BehaviorIdentity {
+    /// Predicted traffic class.
     pub class: BehaviorClass,
-    /// Classifier confidence (0.0–1.0), None if not classified.
+    /// Classifier confidence (0.0–1.0).
     pub confidence: f64,
     /// HDBSCAN cluster ID (-1 = noise / not yet clustered).
     pub cluster_id: i32,
@@ -65,6 +118,12 @@ pub struct MlClassifier {
     samples_since_train: usize,
     retrain_interval: usize,
     max_training_buffer: usize,
+}
+
+impl Default for MlClassifier {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MlClassifier {
@@ -150,10 +209,7 @@ impl MlClassifier {
             self.samples_since_train = 0;
             match self.classifier.train(&self.training_buffer) {
                 Ok(()) => {
-                    log::info!(
-                        "ML model trained on {} samples",
-                        self.training_buffer.len()
-                    );
+                    log::info!("ML model trained on {} samples", self.training_buffer.len());
                 }
                 Err(e) => {
                     log::debug!("ML training skipped: {}", e);
@@ -162,19 +218,18 @@ impl MlClassifier {
         }
 
         // Classify
-        let (class, confidence, is_novel) = if let Some((pred_label, conf)) =
-            self.classifier.predict(&features)
-        {
-            let class = match pred_label.as_str() {
-                "GenericHttps" => BehaviorClass::GenericHttps,
-                "Unknown" => BehaviorClass::Unknown,
-                provider => BehaviorClass::LlmApi(provider.to_string()),
+        let (class, confidence, is_novel) =
+            if let Some((pred_label, conf)) = self.classifier.predict(&features) {
+                let class = match pred_label.as_str() {
+                    "GenericHttps" => BehaviorClass::GenericHttps,
+                    "Unknown" => BehaviorClass::Unknown,
+                    provider => BehaviorClass::LlmApi(provider.to_string()),
+                };
+                let is_novel = ip_label.is_none() && matches!(&class, BehaviorClass::LlmApi(_));
+                (class, conf, is_novel)
+            } else {
+                (BehaviorClass::Unknown, 0.0, false)
             };
-            let is_novel = ip_label.is_none() && matches!(&class, BehaviorClass::LlmApi(_));
-            (class, conf, is_novel)
-        } else {
-            (BehaviorClass::Unknown, 0.0, false)
-        };
 
         // Unsupervised discovery
         let cluster_id = self.discovery.ingest(features.as_slice().unwrap());
@@ -197,7 +252,7 @@ impl MlClassifier {
         let now = Instant::now();
         self.windows.retain(|_, w| {
             w.last_arrival()
-                .map_or(false, |t| now.duration_since(t) < max_idle)
+                .is_some_and(|t| now.duration_since(t) < max_idle)
         });
     }
 }

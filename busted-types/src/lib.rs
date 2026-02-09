@@ -1,6 +1,33 @@
+//! Shared type definitions for the [Busted](https://github.com/barakber/busted) eBPF
+//! LLM/AI communication monitoring system.
+//!
+//! This crate defines the `#[repr(C)]` data structures shared between the eBPF kernel
+//! probes (`busted-ebpf`) and the userspace agent (`busted-agent`). All types are
+//! `no_std`-compatible by default and use fixed-size arrays to satisfy eBPF verifier
+//! constraints.
+//!
+//! # Feature Flags
+//!
+//! - **`user`** — Enables userspace-only functionality:
+//!   - [`aya::Pod`] trait implementations for all event types (required by aya map APIs)
+//!   - [`serde::Serialize`] / [`serde::Deserialize`] on [`processed::ProcessedEvent`]
+//!   - Helper methods for IP address conversion, string extraction, etc.
+//!     (in the [`userspace`] module)
+//!
+//! # Core Types
+//!
+//! | Type | Description |
+//! |------|-------------|
+//! | [`NetworkEvent`] | TCP/UDP network event captured by kprobes |
+//! | [`TlsHandshakeEvent`] | TLS SNI extracted from `SSL_ctrl` uprobe |
+//! | [`TlsDataEvent`] | Decrypted TLS payload from `SSL_write`/`SSL_read` uprobes |
+//! | [`TlsConnKey`] | Composite key `(pid, ssl_ptr)` for the TLS verdict map |
+//! | [`AgentIdentity`] | Identity record for processes communicating with LLM providers |
+//! | [`processed::ProcessedEvent`] | Enriched event for UI/SIEM consumption (requires `user` feature) |
+
 #![cfg_attr(not(feature = "user"), no_std)]
 
-/// Maximum length for process names
+/// Maximum length for process names.
 pub const TASK_COMM_LEN: usize = 16;
 
 /// Maximum length for container IDs
@@ -79,6 +106,12 @@ pub struct TlsHandshakeEvent {
     pub sni: [u8; SNI_MAX_LEN],
 }
 
+impl Default for TlsHandshakeEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TlsHandshakeEvent {
     pub const fn new() -> Self {
         TlsHandshakeEvent {
@@ -100,6 +133,12 @@ pub struct TlsConnKey {
     pub pid: u32,
     pub _pad: u32,
     pub ssl_ptr: u64,
+}
+
+impl Default for TlsConnKey {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TlsConnKey {
@@ -138,6 +177,12 @@ pub struct TlsDataEvent {
     pub _pad2: [u8; 3],
     /// Captured plaintext payload
     pub payload: [u8; TLS_PAYLOAD_MAX],
+}
+
+impl Default for TlsDataEvent {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TlsDataEvent {
@@ -204,6 +249,12 @@ pub struct NetworkEvent {
     pub cgroup: [u8; CGROUP_PATH_LEN],
 }
 
+impl Default for NetworkEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkEvent {
     pub const fn new() -> Self {
         NetworkEvent {
@@ -245,6 +296,12 @@ pub struct AgentIdentity {
     pub container_id: [u8; CONTAINER_ID_LEN],
     /// Creation timestamp
     pub created_at_ns: u64,
+}
+
+impl Default for AgentIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentIdentity {
@@ -296,76 +353,120 @@ mod pod_impls {
     unsafe impl aya::Pod for TlsDataEvent {}
 }
 
+/// Enriched event types for userspace consumption (requires `user` feature).
 #[cfg(feature = "user")]
 pub mod processed {
     use serde::{Deserialize, Serialize};
 
+    /// Enriched event ready for UI display, SIEM export, and policy evaluation.
+    ///
+    /// Produced by the agent from raw eBPF events after classification, ML analysis,
+    /// and container/Kubernetes enrichment. Serialized as NDJSON over the Unix socket
+    /// to the UI and SIEM sinks.
     #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct ProcessedEvent {
+        /// Event type string (e.g. `"TCP_CONNECT"`, `"TLS_DATA_WRITE"`).
         pub event_type: String,
+        /// Human-readable timestamp (`HH:MM:SS.mmm`).
         pub timestamp: String,
+        /// Process ID.
         pub pid: u32,
+        /// User ID.
         pub uid: u32,
+        /// Process/command name.
         pub process_name: String,
+        /// Source IP address (string).
         pub src_ip: String,
+        /// Source port.
         pub src_port: u16,
+        /// Destination IP address (string).
         pub dst_ip: String,
+        /// Destination port.
         pub dst_port: u16,
+        /// Bytes transferred.
         pub bytes: u64,
+        /// LLM provider name from IP/SNI classification.
         pub provider: Option<String>,
+        /// Policy decision (`"allow"`, `"audit"`, `"deny"`).
         pub policy: Option<String>,
+        /// Short container ID (first 12 hex chars).
         pub container_id: String,
+        /// Cgroup ID from the kernel.
         #[serde(default)]
         pub cgroup_id: u64,
+        /// Requests per second for this PID.
         #[serde(default)]
         pub request_rate: Option<f64>,
+        /// Cumulative bytes for this PID's session.
         #[serde(default)]
         pub session_bytes: Option<u64>,
+        /// Kubernetes pod name.
         #[serde(default)]
         pub pod_name: Option<String>,
+        /// Kubernetes namespace.
         #[serde(default)]
         pub pod_namespace: Option<String>,
+        /// Kubernetes service account.
         #[serde(default)]
         pub service_account: Option<String>,
+        /// ML classifier confidence (0.0-1.0).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub ml_confidence: Option<f64>,
+        /// ML-predicted provider name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub ml_provider: Option<String>,
+        /// ML behavioral class (e.g. `"LlmApi(OpenAI)"`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub behavior_class: Option<String>,
+        /// HDBSCAN cluster ID (-1 = noise).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub cluster_id: Option<i32>,
+        /// TLS SNI hostname.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub sni: Option<String>,
+        /// TLS content class (e.g. `"LlmApi"`, `"Mcp"`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tls_protocol: Option<String>,
+        /// TLS classification details (provider, endpoint, model).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tls_details: Option<String>,
+        /// Decrypted TLS payload (lossy UTF-8).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tls_payload: Option<String>,
+        /// Content class from `busted-classifier`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub content_class: Option<String>,
+        /// LLM provider from content classification.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_provider: Option<String>,
+        /// LLM API endpoint identifier.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_endpoint: Option<String>,
+        /// LLM model name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_model: Option<String>,
+        /// MCP method name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub mcp_method: Option<String>,
+        /// MCP method category.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub mcp_category: Option<String>,
+        /// SDK/agent name and version.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub agent_sdk: Option<String>,
+        /// Behavioral signature hash.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub agent_fingerprint: Option<u64>,
+        /// Content classifier confidence (0.0-1.0).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub classifier_confidence: Option<f32>,
+        /// Whether PII was detected in the payload.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub pii_detected: Option<bool>,
     }
 }
 
+/// Userspace helper methods for eBPF event types (requires `user` feature).
 #[cfg(feature = "user")]
 pub mod userspace {
     use super::*;
@@ -374,13 +475,21 @@ pub mod userspace {
     impl TlsHandshakeEvent {
         /// Get SNI hostname as string
         pub fn sni_str(&self) -> &str {
-            let len = self.sni.iter().position(|&c| c == 0).unwrap_or(self.sni.len());
+            let len = self
+                .sni
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.sni.len());
             std::str::from_utf8(&self.sni[..len]).unwrap_or("<invalid>")
         }
 
         /// Get process name as string
         pub fn process_name(&self) -> &str {
-            let len = self.comm.iter().position(|&c| c == 0).unwrap_or(self.comm.len());
+            let len = self
+                .comm
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.comm.len());
             std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
         }
     }
@@ -394,7 +503,11 @@ pub mod userspace {
 
         /// Get process name as string
         pub fn process_name(&self) -> &str {
-            let len = self.comm.iter().position(|&c| c == 0).unwrap_or(self.comm.len());
+            let len = self
+                .comm
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.comm.len());
             std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
         }
     }
@@ -420,13 +533,21 @@ pub mod userspace {
 
         /// Get process name as string
         pub fn process_name(&self) -> &str {
-            let len = self.comm.iter().position(|&c| c == 0).unwrap_or(self.comm.len());
+            let len = self
+                .comm
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.comm.len());
             std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
         }
 
         /// Get container ID as string
         pub fn container_id_str(&self) -> &str {
-            let len = self.container_id.iter().position(|&c| c == 0).unwrap_or(self.container_id.len());
+            let len = self
+                .container_id
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.container_id.len());
             std::str::from_utf8(&self.container_id[..len]).unwrap_or("")
         }
     }

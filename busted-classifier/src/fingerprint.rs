@@ -4,25 +4,35 @@ use crate::json::JsonFields;
 /// SDK/agent info extracted from User-Agent header.
 #[derive(Debug, Clone)]
 pub struct SdkInfo {
+    /// SDK or library name (e.g. `"openai-python"`, `"anthropic-typescript"`).
     pub name: String,
+    /// Version string if parseable from the User-Agent.
     pub version: Option<String>,
 }
 
 /// Model parameters extracted from the request body.
 #[derive(Debug, Clone, Default)]
 pub struct ModelParams {
+    /// Model identifier (e.g. `"gpt-4"`, `"claude-3-opus"`).
     pub model: Option<String>,
+    /// Sampling temperature.
     pub temperature: Option<f64>,
+    /// Maximum tokens to generate.
     pub max_tokens: Option<u64>,
+    /// Whether streaming is enabled.
     pub stream: Option<bool>,
 }
 
 /// Complete agent fingerprint.
 #[derive(Debug, Clone)]
 pub struct AgentFingerprint {
+    /// SDK/library detected from User-Agent.
     pub sdk: Option<SdkInfo>,
+    /// API version header (e.g. Anthropic's `anthropic-version`).
     pub api_version: Option<String>,
+    /// Model parameters extracted from the request body.
     pub model_params: ModelParams,
+    /// FNV-1a hash of request structure for behavioral grouping.
     pub signature_hash: u64,
 }
 
@@ -70,7 +80,9 @@ fn extract_version(ua: &str, pattern: &str) -> Option<String> {
     let after = &ua[idx + pattern.len()..];
 
     // Skip separator (/ or space)
-    let after = after.strip_prefix('/').or_else(|| after.strip_prefix(' '))?;
+    let after = after
+        .strip_prefix('/')
+        .or_else(|| after.strip_prefix(' '))?;
 
     // Take version chars (digits, dots, dashes, alphanumeric)
     let version: String = after
@@ -100,10 +112,7 @@ pub fn extract_api_version(headers: &std::collections::HashMap<String, String>) 
 ///
 /// Hashes: method + path + sorted header names + ordered JSON body keys.
 /// Different SDKs produce different key orderings and header sets.
-pub fn compute_signature_hash(
-    req: &HttpRequestInfo,
-    json: &JsonFields,
-) -> u64 {
+pub fn compute_signature_hash(req: &HttpRequestInfo, json: &JsonFields) -> u64 {
     let mut hasher = Fnv1a::new();
 
     // Method + path
@@ -126,14 +135,8 @@ pub fn compute_signature_hash(
 }
 
 /// Build a complete fingerprint from HTTP request and JSON body.
-pub fn build_fingerprint(
-    req: &HttpRequestInfo,
-    json: &JsonFields,
-) -> AgentFingerprint {
-    let sdk = req
-        .headers
-        .get("user-agent")
-        .and_then(|ua| detect_sdk(ua));
+pub fn build_fingerprint(req: &HttpRequestInfo, json: &JsonFields) -> AgentFingerprint {
+    let sdk = req.headers.get("user-agent").and_then(|ua| detect_sdk(ua));
 
     let api_version = extract_api_version(&req.headers);
 

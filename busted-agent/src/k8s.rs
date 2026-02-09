@@ -38,7 +38,10 @@ pub async fn start_pod_watcher(cache: Arc<RwLock<HashMap<String, PodMetadata>>>)
     let client = match Client::try_default().await {
         Ok(c) => c,
         Err(e) => {
-            warn!("Kubernetes API not available, pod enrichment disabled: {}", e);
+            warn!(
+                "Kubernetes API not available, pod enrichment disabled: {}",
+                e
+            );
             return;
         }
     };

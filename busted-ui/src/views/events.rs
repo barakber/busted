@@ -32,12 +32,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.filter_event_type, String::new(), "All");
-                for t in &["TCP_CONNECT", "DATA_SENT", "DATA_RECEIVED", "CONNECTION_CLOSED", "DNS_QUERY", "TLS_DATA_WRITE", "TLS_DATA_READ"] {
-                    ui.selectable_value(
-                        &mut app.filter_event_type,
-                        t.to_string(),
-                        *t,
-                    );
+                for t in &[
+                    "TCP_CONNECT",
+                    "DATA_SENT",
+                    "DATA_RECEIVED",
+                    "CONNECTION_CLOSED",
+                    "DNS_QUERY",
+                    "TLS_DATA_WRITE",
+                    "TLS_DATA_READ",
+                ] {
+                    ui.selectable_value(&mut app.filter_event_type, t.to_string(), *t);
                 }
             });
 
@@ -106,35 +110,79 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
 
     table
         .header(20.0, |mut header| {
-            header.col(|ui| { ui.strong("Time"); });
-            header.col(|ui| { ui.strong("Type"); });
-            header.col(|ui| { ui.strong("PID"); });
-            header.col(|ui| { ui.strong("Process"); });
-            header.col(|ui| { ui.strong("Dst IP"); });
-            header.col(|ui| { ui.strong("Port"); });
-            header.col(|ui| { ui.strong("Bytes"); });
-            header.col(|ui| { ui.strong("Provider"); });
-            header.col(|ui| { ui.strong("Model"); });
-            header.col(|ui| { ui.strong("SDK"); });
-            header.col(|ui| { ui.strong("MCP Method"); });
-            header.col(|ui| { ui.strong("SNI"); });
-            header.col(|ui| { ui.strong("Container"); });
+            header.col(|ui| {
+                ui.strong("Time");
+            });
+            header.col(|ui| {
+                ui.strong("Type");
+            });
+            header.col(|ui| {
+                ui.strong("PID");
+            });
+            header.col(|ui| {
+                ui.strong("Process");
+            });
+            header.col(|ui| {
+                ui.strong("Dst IP");
+            });
+            header.col(|ui| {
+                ui.strong("Port");
+            });
+            header.col(|ui| {
+                ui.strong("Bytes");
+            });
+            header.col(|ui| {
+                ui.strong("Provider");
+            });
+            header.col(|ui| {
+                ui.strong("Model");
+            });
+            header.col(|ui| {
+                ui.strong("SDK");
+            });
+            header.col(|ui| {
+                ui.strong("MCP Method");
+            });
+            header.col(|ui| {
+                ui.strong("SNI");
+            });
+            header.col(|ui| {
+                ui.strong("Container");
+            });
         })
         .body(|body| {
             body.rows(18.0, row_count, |mut row| {
                 let idx = filtered[row.index()];
                 let event = &app.events[idx];
-                row.col(|ui| { ui.label(&event.timestamp); });
-                row.col(|ui| { ui.label(&event.event_type); });
-                row.col(|ui| { ui.label(event.pid.to_string()); });
-                row.col(|ui| { ui.label(&event.process_name); });
-                row.col(|ui| { ui.label(&event.dst_ip); });
-                row.col(|ui| { ui.label(event.dst_port.to_string()); });
-                row.col(|ui| { ui.label(format_bytes(event.bytes)); });
                 row.col(|ui| {
-                    ui.label(event.llm_provider.as_deref()
-                        .or(event.provider.as_deref())
-                        .unwrap_or("-"));
+                    ui.label(&event.timestamp);
+                });
+                row.col(|ui| {
+                    ui.label(&event.event_type);
+                });
+                row.col(|ui| {
+                    ui.label(event.pid.to_string());
+                });
+                row.col(|ui| {
+                    ui.label(&event.process_name);
+                });
+                row.col(|ui| {
+                    ui.label(&event.dst_ip);
+                });
+                row.col(|ui| {
+                    ui.label(event.dst_port.to_string());
+                });
+                row.col(|ui| {
+                    ui.label(format_bytes(event.bytes));
+                });
+                row.col(|ui| {
+                    ui.label(
+                        event
+                            .llm_provider
+                            .as_deref()
+                            .or(event.provider.as_deref())
+                            .unwrap_or("-"),
+                    );
                 });
                 row.col(|ui| {
                     ui.label(event.llm_model.as_deref().unwrap_or("-"));
@@ -149,7 +197,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
                     ui.label(event.sni.as_deref().unwrap_or("-"));
                 });
                 row.col(|ui| {
-                    let cid = if event.container_id.is_empty() { "-" } else { &event.container_id };
+                    let cid = if event.container_id.is_empty() {
+                        "-"
+                    } else {
+                        &event.container_id
+                    };
                     ui.label(cid);
                 });
             });

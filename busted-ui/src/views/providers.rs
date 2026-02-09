@@ -11,7 +11,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
 
     // Sort providers by event count (descending)
     let mut providers: Vec<_> = app.provider_stats.iter().collect();
-    providers.sort_by(|a, b| b.1.event_count.cmp(&a.1.event_count));
+    providers.sort_by_key(|b| std::cmp::Reverse(b.1.event_count));
 
     let max_events = providers
         .first()
@@ -39,19 +39,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut BustedApp) {
 
                 // Simple bar chart
                 let fraction = stats.event_count as f32 / max_events;
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(200.0, 16.0),
-                    egui::Sense::hover(),
-                );
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(200.0, 16.0), egui::Sense::hover());
                 let bar_rect = egui::Rect::from_min_size(
                     rect.min,
                     egui::vec2(rect.width() * fraction, rect.height()),
                 );
-                ui.painter().rect_filled(
-                    bar_rect,
-                    2.0,
-                    provider_color(name),
-                );
+                ui.painter()
+                    .rect_filled(bar_rect, 2.0, provider_color(name));
                 ui.painter().rect_stroke(
                     rect,
                     2.0,

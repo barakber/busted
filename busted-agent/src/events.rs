@@ -73,18 +73,19 @@ pub fn from_tls_data_event(
     let payload = String::from_utf8_lossy(event.payload_bytes()).to_string();
 
     let tls_protocol = classification.content_class_str().map(|s| s.to_string());
-    let tls_details = classification.provider().map(|p| {
-        let mut detail = p.to_string();
-        if let Some(ep) = classification.endpoint() {
-            detail.push_str(&format!(" ({})", ep));
-        }
-        if let Some(m) = classification.model() {
-            detail.push_str(&format!(" model={}", m));
-        }
-        detail
-    }).or_else(|| {
-        classification.mcp_method().map(|m| format!("MCP {}", m))
-    });
+    let tls_details = classification
+        .provider()
+        .map(|p| {
+            let mut detail = p.to_string();
+            if let Some(ep) = classification.endpoint() {
+                detail.push_str(&format!(" ({})", ep));
+            }
+            if let Some(m) = classification.model() {
+                detail.push_str(&format!(" model={}", m));
+            }
+            detail
+        })
+        .or_else(|| classification.mcp_method().map(|m| format!("MCP {}", m)));
 
     ProcessedEvent {
         event_type: event_type.to_string(),

@@ -10,20 +10,30 @@ use std::collections::HashMap;
 /// Parsed HTTP/1.1 request.
 #[derive(Debug, Clone)]
 pub struct HttpRequestInfo {
+    /// HTTP method (e.g. `GET`, `POST`).
     pub method: String,
+    /// Request path (e.g. `/v1/chat/completions`).
     pub path: String,
+    /// HTTP version (e.g. `HTTP/1.1`).
     pub version: String,
+    /// Headers (keys lowercased, values with sensitive data masked).
     pub headers: HashMap<String, String>,
+    /// Byte offset where the body starts in the original payload.
     pub body_offset: Option<usize>,
 }
 
 /// Parsed HTTP/1.1 response.
 #[derive(Debug, Clone)]
 pub struct HttpResponseInfo {
+    /// HTTP version (e.g. `HTTP/1.1`).
     pub version: String,
+    /// Status code (e.g. `200`, `404`).
     pub status_code: u16,
+    /// Reason phrase (e.g. `OK`, `Not Found`).
     pub reason: String,
+    /// Headers (keys lowercased).
     pub headers: HashMap<String, String>,
+    /// Byte offset where the body starts in the original payload.
     pub body_offset: Option<usize>,
 }
 
@@ -64,7 +74,14 @@ pub fn is_http2_binary(data: &[u8]) -> bool {
 /// Quick check: does this look like the start of an HTTP request?
 pub fn looks_like_http_request(data: &[u8]) -> bool {
     const METHODS: &[&[u8]] = &[
-        b"GET ", b"POST ", b"PUT ", b"DELETE ", b"PATCH ", b"HEAD ", b"OPTIONS ", b"CONNECT ",
+        b"GET ",
+        b"POST ",
+        b"PUT ",
+        b"DELETE ",
+        b"PATCH ",
+        b"HEAD ",
+        b"OPTIONS ",
+        b"CONNECT ",
     ];
     for m in METHODS {
         if data.starts_with(m) {
@@ -87,6 +104,7 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], &[u8]> {
     take_while1(|c: u8| c.is_ascii_uppercase())(input)
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_request_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8], &[u8])> {
     let (input, method) = parse_method(input)?;
     let (input, _) = space1(input)?;
@@ -97,6 +115,7 @@ fn parse_request_line(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8], &[u8])> {
     Ok((input, (method, path, version)))
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_status_line(input: &[u8]) -> IResult<&[u8], (&[u8], u16, &[u8])> {
     let (input, version) = take_while1(|c: u8| c != b' ' && c != b'\r')(input)?;
     let (input, _) = space1(input)?;
@@ -107,8 +126,9 @@ fn parse_status_line(input: &[u8]) -> IResult<&[u8], (&[u8], u16, &[u8])> {
         .unwrap_or(0);
     let (input, _) = opt(space1)(input)?;
     // Reason phrase is optional and runs to CRLF
-    let (input, reason) = take_while1::<_, _, nom::error::Error<&[u8]>>(|c: u8| c != b'\r' && c != b'\n')(input)
-        .unwrap_or((input, b"" as &[u8]));
+    let (input, reason) =
+        take_while1::<_, _, nom::error::Error<&[u8]>>(|c: u8| c != b'\r' && c != b'\n')(input)
+            .unwrap_or((input, b"" as &[u8]));
     let (input, _) = tag(b"\r\n")(input)?;
     Ok((input, (version, code, reason)))
 }
@@ -222,10 +242,7 @@ mod tests {
         assert_eq!(req.method, "POST");
         assert_eq!(req.path, "/v1/chat/completions");
         assert_eq!(req.headers.get("host").unwrap(), "api.openai.com");
-        assert_eq!(
-            req.headers.get("content-type").unwrap(),
-            "application/json"
-        );
+        assert_eq!(req.headers.get("content-type").unwrap(), "application/json");
         assert!(req.headers.get("authorization").unwrap().contains("..."));
         assert_eq!(
             req.headers.get("user-agent").unwrap(),
@@ -236,7 +253,8 @@ mod tests {
 
     #[test]
     fn test_parse_response() {
-        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\":\"chatcmpl-123\"}";
+        let raw =
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"id\":\"chatcmpl-123\"}";
         let resp = parse_response(raw).unwrap();
         assert_eq!(resp.status_code, 200);
         assert_eq!(resp.reason, "OK");
@@ -254,9 +272,7 @@ mod tests {
 
     #[test]
     fn test_http2_detection() {
-        assert!(is_http2_binary(
-            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-        ));
+        assert!(is_http2_binary(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"));
         assert!(!is_http2_binary(b"GET / HTTP/1.1\r\n"));
     }
 

@@ -4,16 +4,22 @@ use crate::json::JsonFields;
 /// LLM API classification result.
 #[derive(Debug, Clone)]
 pub struct LlmApiInfo {
+    /// LLM provider name (e.g. `"OpenAI"`, `"Anthropic"`).
     pub provider: String,
+    /// API endpoint identifier (e.g. `"chat_completions"`, `"messages"`).
     pub endpoint: String,
+    /// Model name if extracted from the request body.
     pub model: Option<String>,
+    /// Whether the request uses streaming (`stream: true`).
     pub streaming: Option<bool>,
 }
 
 /// LLM streaming response info.
 #[derive(Debug, Clone)]
 pub struct LlmStreamInfo {
+    /// LLM provider name (e.g. `"OpenAI"`, `"Anthropic"`).
     pub provider: String,
+    /// Stream format (e.g. `"sse_choices_delta"`, `"sse_content_block"`).
     pub stream_type: String,
 }
 
@@ -28,56 +34,226 @@ struct EndpointRule {
 
 const ENDPOINT_RULES: &[EndpointRule] = &[
     // OpenAI
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/chat/completions", method: Some("POST"), provider: "OpenAI", endpoint: "chat_completions" },
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/completions", method: Some("POST"), provider: "OpenAI", endpoint: "completions" },
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/embeddings", method: Some("POST"), provider: "OpenAI", endpoint: "embeddings" },
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/images/generations", method: Some("POST"), provider: "OpenAI", endpoint: "images" },
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/audio", method: None, provider: "OpenAI", endpoint: "audio" },
-    EndpointRule { host: Some("api.openai.com"), path: "/v1/models", method: None, provider: "OpenAI", endpoint: "models" },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/chat/completions",
+        method: Some("POST"),
+        provider: "OpenAI",
+        endpoint: "chat_completions",
+    },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/completions",
+        method: Some("POST"),
+        provider: "OpenAI",
+        endpoint: "completions",
+    },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/embeddings",
+        method: Some("POST"),
+        provider: "OpenAI",
+        endpoint: "embeddings",
+    },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/images/generations",
+        method: Some("POST"),
+        provider: "OpenAI",
+        endpoint: "images",
+    },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/audio",
+        method: None,
+        provider: "OpenAI",
+        endpoint: "audio",
+    },
+    EndpointRule {
+        host: Some("api.openai.com"),
+        path: "/v1/models",
+        method: None,
+        provider: "OpenAI",
+        endpoint: "models",
+    },
     // Anthropic
-    EndpointRule { host: Some("api.anthropic.com"), path: "/v1/messages", method: Some("POST"), provider: "Anthropic", endpoint: "messages" },
-    EndpointRule { host: Some("api.anthropic.com"), path: "/v1/complete", method: Some("POST"), provider: "Anthropic", endpoint: "complete" },
+    EndpointRule {
+        host: Some("api.anthropic.com"),
+        path: "/v1/messages",
+        method: Some("POST"),
+        provider: "Anthropic",
+        endpoint: "messages",
+    },
+    EndpointRule {
+        host: Some("api.anthropic.com"),
+        path: "/v1/complete",
+        method: Some("POST"),
+        provider: "Anthropic",
+        endpoint: "complete",
+    },
     // Google
-    EndpointRule { host: Some("generativelanguage.googleapis.com"), path: "/v1beta/models", method: None, provider: "Google", endpoint: "gemini" },
-    EndpointRule { host: Some("generativelanguage.googleapis.com"), path: "/v1/models", method: None, provider: "Google", endpoint: "gemini" },
-    EndpointRule { host: Some("aiplatform.googleapis.com"), path: "/v1/projects", method: None, provider: "Google", endpoint: "vertex" },
+    EndpointRule {
+        host: Some("generativelanguage.googleapis.com"),
+        path: "/v1beta/models",
+        method: None,
+        provider: "Google",
+        endpoint: "gemini",
+    },
+    EndpointRule {
+        host: Some("generativelanguage.googleapis.com"),
+        path: "/v1/models",
+        method: None,
+        provider: "Google",
+        endpoint: "gemini",
+    },
+    EndpointRule {
+        host: Some("aiplatform.googleapis.com"),
+        path: "/v1/projects",
+        method: None,
+        provider: "Google",
+        endpoint: "vertex",
+    },
     // Azure OpenAI
-    EndpointRule { host: None, path: "/openai/deployments/", method: None, provider: "Azure", endpoint: "openai" },
+    EndpointRule {
+        host: None,
+        path: "/openai/deployments/",
+        method: None,
+        provider: "Azure",
+        endpoint: "openai",
+    },
     // AWS Bedrock
-    EndpointRule { host: Some("bedrock-runtime"), path: "/model/", method: Some("POST"), provider: "AWS Bedrock", endpoint: "invoke" },
+    EndpointRule {
+        host: Some("bedrock-runtime"),
+        path: "/model/",
+        method: Some("POST"),
+        provider: "AWS Bedrock",
+        endpoint: "invoke",
+    },
     // Ollama
-    EndpointRule { host: None, path: "/api/chat", method: Some("POST"), provider: "Ollama", endpoint: "chat" },
-    EndpointRule { host: None, path: "/api/generate", method: Some("POST"), provider: "Ollama", endpoint: "generate" },
-    EndpointRule { host: None, path: "/api/embeddings", method: Some("POST"), provider: "Ollama", endpoint: "embeddings" },
+    EndpointRule {
+        host: None,
+        path: "/api/chat",
+        method: Some("POST"),
+        provider: "Ollama",
+        endpoint: "chat",
+    },
+    EndpointRule {
+        host: None,
+        path: "/api/generate",
+        method: Some("POST"),
+        provider: "Ollama",
+        endpoint: "generate",
+    },
+    EndpointRule {
+        host: None,
+        path: "/api/embeddings",
+        method: Some("POST"),
+        provider: "Ollama",
+        endpoint: "embeddings",
+    },
     // Cohere
-    EndpointRule { host: Some("api.cohere.ai"), path: "/v1/chat", method: Some("POST"), provider: "Cohere", endpoint: "chat" },
-    EndpointRule { host: Some("api.cohere.ai"), path: "/v1/generate", method: Some("POST"), provider: "Cohere", endpoint: "generate" },
-    EndpointRule { host: Some("api.cohere.ai"), path: "/v1/embed", method: Some("POST"), provider: "Cohere", endpoint: "embed" },
+    EndpointRule {
+        host: Some("api.cohere.ai"),
+        path: "/v1/chat",
+        method: Some("POST"),
+        provider: "Cohere",
+        endpoint: "chat",
+    },
+    EndpointRule {
+        host: Some("api.cohere.ai"),
+        path: "/v1/generate",
+        method: Some("POST"),
+        provider: "Cohere",
+        endpoint: "generate",
+    },
+    EndpointRule {
+        host: Some("api.cohere.ai"),
+        path: "/v1/embed",
+        method: Some("POST"),
+        provider: "Cohere",
+        endpoint: "embed",
+    },
     // Mistral
-    EndpointRule { host: Some("api.mistral.ai"), path: "/v1/chat/completions", method: Some("POST"), provider: "Mistral", endpoint: "chat_completions" },
+    EndpointRule {
+        host: Some("api.mistral.ai"),
+        path: "/v1/chat/completions",
+        method: Some("POST"),
+        provider: "Mistral",
+        endpoint: "chat_completions",
+    },
     // Groq
-    EndpointRule { host: Some("api.groq.com"), path: "/openai/v1/chat/completions", method: Some("POST"), provider: "Groq", endpoint: "chat_completions" },
+    EndpointRule {
+        host: Some("api.groq.com"),
+        path: "/openai/v1/chat/completions",
+        method: Some("POST"),
+        provider: "Groq",
+        endpoint: "chat_completions",
+    },
     // Together
-    EndpointRule { host: Some("api.together.xyz"), path: "/v1/chat/completions", method: Some("POST"), provider: "Together", endpoint: "chat_completions" },
+    EndpointRule {
+        host: Some("api.together.xyz"),
+        path: "/v1/chat/completions",
+        method: Some("POST"),
+        provider: "Together",
+        endpoint: "chat_completions",
+    },
     // DeepSeek
-    EndpointRule { host: Some("api.deepseek.com"), path: "/v1/chat/completions", method: Some("POST"), provider: "DeepSeek", endpoint: "chat_completions" },
+    EndpointRule {
+        host: Some("api.deepseek.com"),
+        path: "/v1/chat/completions",
+        method: Some("POST"),
+        provider: "DeepSeek",
+        endpoint: "chat_completions",
+    },
     // Perplexity
-    EndpointRule { host: Some("api.perplexity.ai"), path: "/chat/completions", method: Some("POST"), provider: "Perplexity", endpoint: "chat_completions" },
+    EndpointRule {
+        host: Some("api.perplexity.ai"),
+        path: "/chat/completions",
+        method: Some("POST"),
+        provider: "Perplexity",
+        endpoint: "chat_completions",
+    },
     // Generic OpenAI-compatible fallbacks (no host constraint)
-    EndpointRule { host: None, path: "/v1/chat/completions", method: Some("POST"), provider: "OpenAI-compatible", endpoint: "chat_completions" },
-    EndpointRule { host: None, path: "/v1/completions", method: Some("POST"), provider: "OpenAI-compatible", endpoint: "completions" },
-    EndpointRule { host: None, path: "/v1/embeddings", method: Some("POST"), provider: "OpenAI-compatible", endpoint: "embeddings" },
-    EndpointRule { host: None, path: "/v1/messages", method: Some("POST"), provider: "Anthropic-compatible", endpoint: "messages" },
-    EndpointRule { host: None, path: "/chat/completions", method: Some("POST"), provider: "OpenAI-compatible", endpoint: "chat_completions" },
+    EndpointRule {
+        host: None,
+        path: "/v1/chat/completions",
+        method: Some("POST"),
+        provider: "OpenAI-compatible",
+        endpoint: "chat_completions",
+    },
+    EndpointRule {
+        host: None,
+        path: "/v1/completions",
+        method: Some("POST"),
+        provider: "OpenAI-compatible",
+        endpoint: "completions",
+    },
+    EndpointRule {
+        host: None,
+        path: "/v1/embeddings",
+        method: Some("POST"),
+        provider: "OpenAI-compatible",
+        endpoint: "embeddings",
+    },
+    EndpointRule {
+        host: None,
+        path: "/v1/messages",
+        method: Some("POST"),
+        provider: "Anthropic-compatible",
+        endpoint: "messages",
+    },
+    EndpointRule {
+        host: None,
+        path: "/chat/completions",
+        method: Some("POST"),
+        provider: "OpenAI-compatible",
+        endpoint: "chat_completions",
+    },
 ];
 
 /// Match an HTTP request against the LLM endpoint rule table.
-pub fn match_request(
-    req: &HttpRequestInfo,
-    sni_hint: Option<&str>,
-) -> Option<LlmApiInfo> {
-    let host = sni_hint
-        .or_else(|| req.headers.get("host").map(|s| s.as_str()));
+pub fn match_request(req: &HttpRequestInfo, sni_hint: Option<&str>) -> Option<LlmApiInfo> {
+    let host = sni_hint.or_else(|| req.headers.get("host").map(|s| s.as_str()));
 
     // First pass: rules with host constraints (more specific)
     for rule in ENDPOINT_RULES.iter().filter(|r| r.host.is_some()) {
@@ -156,7 +332,9 @@ pub fn classify_response(json: &JsonFields, sni_hint: Option<&str>) -> Option<Ll
     // Anthropic-style response: has "content" array and model
     if json.has_content && json.model.is_some() {
         return Some(LlmApiInfo {
-            provider: provider_from_sni(sni_hint).unwrap_or("Anthropic").to_string(),
+            provider: provider_from_sni(sni_hint)
+                .unwrap_or("Anthropic")
+                .to_string(),
             endpoint: "messages".to_string(),
             model: json.model.clone(),
             streaming: None,
@@ -200,9 +378,7 @@ pub fn detect_sse_stream(text: &str, sni_hint: Option<&str>) -> Option<LlmStream
             || text.contains("data: [DONE]")
         {
             return Some(LlmStreamInfo {
-                provider: provider_from_sni(sni_hint)
-                    .unwrap_or("OpenAI")
-                    .to_string(),
+                provider: provider_from_sni(sni_hint).unwrap_or("OpenAI").to_string(),
                 stream_type: "sse".to_string(),
             });
         }
@@ -210,9 +386,7 @@ pub fn detect_sse_stream(text: &str, sni_hint: Option<&str>) -> Option<LlmStream
         // Generic SSE with LLM indicators
         if text.contains("\"model\"") || text.contains("\"content\"") {
             return Some(LlmStreamInfo {
-                provider: provider_from_sni(sni_hint)
-                    .unwrap_or("Unknown")
-                    .to_string(),
+                provider: provider_from_sni(sni_hint).unwrap_or("Unknown").to_string(),
                 stream_type: "sse".to_string(),
             });
         }
@@ -308,7 +482,8 @@ mod tests {
 
     #[test]
     fn test_response_classification() {
-        let body = br#"{"id":"chatcmpl-123","choices":[{"message":{"content":"Hello"}}],"model":"gpt-4"}"#;
+        let body =
+            br#"{"id":"chatcmpl-123","choices":[{"message":{"content":"Hello"}}],"model":"gpt-4"}"#;
         let jf = json::analyze(body);
         let info = classify_response(&jf, Some("api.openai.com")).unwrap();
         assert_eq!(info.provider, "OpenAI");

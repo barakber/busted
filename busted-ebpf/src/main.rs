@@ -154,7 +154,10 @@ fn try_tcp_connect(ctx: ProbeContext) -> Result<u32, u32> {
 
     EVENTS.output(&event, 0).ok();
 
-    info!(&ctx, "TCP connect from PID {} ({})", event.pid, event.comm[0]);
+    info!(
+        &ctx,
+        "TCP connect from PID {} ({})", event.pid, event.comm[0]
+    );
 
     Ok(0)
 }

@@ -25,6 +25,8 @@ edition = "2021"
 license = "MIT"
 authors = ["Barak Bercovitz <barakber@gmail.com>"]
 repository = "https://github.com/barakber/busted"
+homepage = "https://github.com/barakber/busted"
+rust-version = "1.75"
 
 [workspace.dependencies]
 # Shared dependencies across crates

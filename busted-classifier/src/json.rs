@@ -127,8 +127,8 @@ fn scan_truncated(body: &[u8]) -> JsonFields {
                     let val_start = skip_whitespace(bytes, after + 1);
                     match key {
                         "model" => {
-                            fields.model = extract_string_value(bytes, val_start)
-                                .map(|s| s.to_string());
+                            fields.model =
+                                extract_string_value(bytes, val_start).map(|s| s.to_string());
                         }
                         "messages" => fields.has_messages = true,
                         "prompt" => fields.has_prompt = true,
@@ -146,12 +146,12 @@ fn scan_truncated(body: &[u8]) -> JsonFields {
                             fields.stream = extract_bool_value(bytes, val_start);
                         }
                         "jsonrpc" => {
-                            fields.jsonrpc = extract_string_value(bytes, val_start)
-                                .map(|s| s.to_string());
+                            fields.jsonrpc =
+                                extract_string_value(bytes, val_start).map(|s| s.to_string());
                         }
                         "method" => {
-                            fields.method = extract_string_value(bytes, val_start)
-                                .map(|s| s.to_string());
+                            fields.method =
+                                extract_string_value(bytes, val_start).map(|s| s.to_string());
                         }
                         "id" => {
                             fields.id = extract_string_value(bytes, val_start)
@@ -198,7 +198,9 @@ fn find_closing_quote(bytes: &[u8], start: usize) -> Option<usize> {
 
 fn skip_whitespace(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r') {
+    while i < bytes.len()
+        && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+    {
         i += 1;
     }
     i
@@ -218,7 +220,11 @@ fn extract_number_value(bytes: &[u8], start: usize) -> Option<f64> {
     }
     let mut end = start;
     while end < bytes.len()
-        && (bytes[end].is_ascii_digit() || bytes[end] == b'.' || bytes[end] == b'-' || bytes[end] == b'e' || bytes[end] == b'E')
+        && (bytes[end].is_ascii_digit()
+            || bytes[end] == b'.'
+            || bytes[end] == b'-'
+            || bytes[end] == b'e'
+            || bytes[end] == b'E')
     {
         end += 1;
     }

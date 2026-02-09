@@ -83,14 +83,13 @@ pub fn detect_libssl_path() -> Option<PathBuf> {
     }
 
     // Fallback: parse ldconfig -p
-    match std::process::Command::new("ldconfig")
-        .arg("-p")
-        .output()
-    {
+    match std::process::Command::new("ldconfig").arg("-p").output() {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
-                if line.contains("libssl.so") && line.contains("x86-64") || line.contains("libssl.so.3") {
+                if line.contains("libssl.so") && line.contains("x86-64")
+                    || line.contains("libssl.so.3")
+                {
                     // Format: "    libssl.so.3 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libssl.so.3"
                     if let Some(path) = line.split("=> ").nth(1) {
                         let path = path.trim();
@@ -217,4 +216,3 @@ impl TlsConnTracker {
             .retain(|_, state| state.first_seen.elapsed().as_secs() < CONN_TTL_SECS);
     }
 }
-

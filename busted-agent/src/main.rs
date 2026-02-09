@@ -11,31 +11,31 @@ mod siem;
 mod tls;
 
 use anyhow::{Context, Result};
+#[cfg(feature = "tls")]
+use aya::programs::UProbe;
 use aya::{
     include_bytes_aligned,
     maps::{HashMap as AyaHashMap, MapData, RingBuf},
     programs::{KProbe, Lsm},
     Btf, Ebpf,
 };
-#[cfg(feature = "tls")]
-use aya::programs::UProbe;
 use aya_log::EbpfLogger;
+use busted_types::processed::ProcessedEvent;
 use busted_types::{AgentIdentity, NetworkEvent};
 #[cfg(feature = "tls")]
 use busted_types::{TlsConnKey, TlsDataEvent, TlsHandshakeEvent};
 use clap::Parser;
-use busted_types::processed::ProcessedEvent;
 use log::{debug, info, warn};
 use regex::Regex;
 use serde::Serialize;
+#[cfg(feature = "prometheus")]
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     net::{IpAddr, ToSocketAddrs},
     sync::Arc,
     time::Instant,
 };
-#[cfg(feature = "prometheus")]
-use std::collections::HashSet;
 use tokio::{
     io::unix::AsyncFd,
     signal,
@@ -363,6 +363,7 @@ impl From<&ProcessedEvent> for EventOutput {
 // Event handling
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_event(
     event: NetworkEvent,
     tx: &broadcast::Sender<ProcessedEvent>,
@@ -440,9 +441,7 @@ async fn handle_event(
     let container_id = resolve_container_id(event.pid, container_cache);
 
     // Update per-PID traffic stats
-    let stats = pid_stats
-        .entry(event.pid)
-        .or_insert_with(PidStats::new);
+    let stats = pid_stats.entry(event.pid).or_insert_with(PidStats::new);
     stats.event_count += 1;
     stats.bytes_total += event.bytes;
     let request_rate = stats.request_rate();
@@ -571,7 +570,11 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                                 event.process_name,
                                 event.bytes,
                                 event.tls_protocol.as_deref().unwrap_or(""),
-                                event.tls_details.as_ref().map(|d| format!(" ({})", d)).unwrap_or_default(),
+                                event
+                                    .tls_details
+                                    .as_ref()
+                                    .map(|d| format!(" ({})", d))
+                                    .unwrap_or_default(),
                                 payload,
                             );
                         }
@@ -739,7 +742,10 @@ async fn main() -> Result<()> {
             let prog: &mut UProbe = bpf.program_mut("ssl_ctrl_sni").unwrap().try_into()?;
             prog.load()?;
             match prog.attach(Some("SSL_ctrl"), 0, &libssl_path, None) {
-                Ok(_) => info!("TLS uprobe attached to SSL_ctrl at {}", libssl_path.display()),
+                Ok(_) => info!(
+                    "TLS uprobe attached to SSL_ctrl at {}",
+                    libssl_path.display()
+                ),
                 Err(e) => warn!("Failed to attach TLS uprobe: {}", e),
             }
 
@@ -876,12 +882,15 @@ async fn main() -> Result<()> {
                     && !item.is_empty()
                     && (item[0] == 7 || item[0] == 8)
                 {
-                    let tls_data = unsafe {
-                        (item.as_ptr() as *const TlsDataEvent).read_unaligned()
-                    };
+                    let tls_data =
+                        unsafe { (item.as_ptr() as *const TlsDataEvent).read_unaligned() };
                     drop(item);
 
-                    let direction_str = if tls_data.direction == 0 { "write" } else { "read" };
+                    let direction_str = if tls_data.direction == 0 {
+                        "write"
+                    } else {
+                        "read"
+                    };
                     let key = TlsConnKey {
                         pid: tls_data.pid,
                         _pad: 0,
@@ -889,10 +898,7 @@ async fn main() -> Result<()> {
                     };
 
                     // Track chunk count
-                    let chunk_num = tls_conn_tracker.record_chunk(
-                        tls_data.pid,
-                        tls_data.ssl_ptr,
-                    );
+                    let chunk_num = tls_conn_tracker.record_chunk(tls_data.pid, tls_data.ssl_ptr);
 
                     // Get SNI hint for this PID
                     let sni_hint = sni_cache.get(tls_data.pid);
@@ -912,10 +918,7 @@ async fn main() -> Result<()> {
                             tls_data.payload_len,
                         );
 
-                        let processed = events::from_tls_data_event(
-                            &tls_data,
-                            &classification,
-                        );
+                        let processed = events::from_tls_data_event(&tls_data, &classification);
                         let _ = tx.send(processed);
                     } else {
                         // Still undecided — classify this chunk
@@ -927,11 +930,7 @@ async fn main() -> Result<()> {
 
                         if classification.is_interesting {
                             // Found LLM/MCP traffic!
-                            tls_conn_tracker.set_verdict(
-                                tls_data.pid,
-                                tls_data.ssl_ptr,
-                                true,
-                            );
+                            tls_conn_tracker.set_verdict(tls_data.pid, tls_data.ssl_ptr, true);
                             let _ = tls_verdict_map.insert(key, 1u8, 0); // INTERESTING
 
                             #[cfg(feature = "prometheus")]
@@ -949,21 +948,13 @@ async fn main() -> Result<()> {
                                 chunk_num,
                             );
 
-                            let processed = events::from_tls_data_event(
-                                &tls_data,
-                                &classification,
-                            );
+                            let processed = events::from_tls_data_event(&tls_data, &classification);
                             let _ = tx.send(processed);
-                        } else if tls_conn_tracker.should_mark_boring(
-                            tls_data.pid,
-                            tls_data.ssl_ptr,
-                        ) {
+                        } else if tls_conn_tracker
+                            .should_mark_boring(tls_data.pid, tls_data.ssl_ptr)
+                        {
                             // Hit the limit — mark as boring
-                            tls_conn_tracker.set_verdict(
-                                tls_data.pid,
-                                tls_data.ssl_ptr,
-                                false,
-                            );
+                            tls_conn_tracker.set_verdict(tls_data.pid, tls_data.ssl_ptr, false);
                             let _ = tls_verdict_map.insert(key, 2u8, 0); // BORING
 
                             #[cfg(feature = "prometheus")]
@@ -996,9 +987,8 @@ async fn main() -> Result<()> {
                     && !item.is_empty()
                     && item[0] == 6
                 {
-                    let tls_event = unsafe {
-                        (item.as_ptr() as *const TlsHandshakeEvent).read_unaligned()
-                    };
+                    let tls_event =
+                        unsafe { (item.as_ptr() as *const TlsHandshakeEvent).read_unaligned() };
                     let sni = tls_event.sni_str().to_string();
                     if !sni.is_empty() {
                         info!(
@@ -1014,8 +1004,7 @@ async fn main() -> Result<()> {
                 }
 
                 if item_len >= std::mem::size_of::<NetworkEvent>() {
-                    let event =
-                        unsafe { (item.as_ptr() as *const NetworkEvent).read_unaligned() };
+                    let event = unsafe { (item.as_ptr() as *const NetworkEvent).read_unaligned() };
                     drop(item); // consume the ring buf entry before async work
                     handle_event(
                         event,

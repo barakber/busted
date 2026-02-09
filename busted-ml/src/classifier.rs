@@ -112,12 +112,10 @@ impl TrainedClassifier {
                 .map(|_| *indices.choose(&mut rng).unwrap())
                 .collect();
 
-            let boot_features =
-                Array2::from_shape_fn((sample_size, FEATURE_DIM), |(r, c)| {
-                    features[[boot_indices[r], c]]
-                });
-            let boot_targets =
-                Array1::from_shape_fn(sample_size, |r| targets[boot_indices[r]]);
+            let boot_features = Array2::from_shape_fn((sample_size, FEATURE_DIM), |(r, c)| {
+                features[[boot_indices[r], c]]
+            });
+            let boot_targets = Array1::from_shape_fn(sample_size, |r| targets[boot_indices[r]]);
 
             let dataset = DatasetBase::new(boot_features, boot_targets);
 

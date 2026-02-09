@@ -3,12 +3,19 @@ use crate::json::JsonFields;
 /// MCP method category.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpCategory {
+    /// Tool invocation methods (`tools/call`, `tools/list`).
     Tools,
+    /// Resource access methods (`resources/read`, `resources/list`).
     Resources,
+    /// Prompt template methods (`prompts/get`, `prompts/list`).
     Prompts,
+    /// Lifecycle methods (`initialize`, `shutdown`, `ping`).
     Lifecycle,
+    /// Completion/autocomplete methods.
     Completion,
+    /// Logging methods (`logging/setLevel`).
     Logging,
+    /// Unrecognized MCP method.
     Other,
 }
 
@@ -29,9 +36,13 @@ impl std::fmt::Display for McpCategory {
 /// Type of JSON-RPC message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpMsgType {
+    /// JSON-RPC request (has `method` and `id`).
     Request,
+    /// JSON-RPC notification (has `method`, no `id`).
     Notification,
+    /// JSON-RPC success response (has `result` and `id`).
     Response,
+    /// JSON-RPC error response (has `error` and `id`).
     Error,
 }
 
@@ -49,9 +60,13 @@ impl std::fmt::Display for McpMsgType {
 /// MCP classification result.
 #[derive(Debug, Clone)]
 pub struct McpInfo {
+    /// MCP method name (e.g. `"tools/call"`, `"initialize"`).
     pub method: Option<String>,
+    /// Functional category of the method.
     pub category: McpCategory,
+    /// JSON-RPC message type.
     pub msg_type: McpMsgType,
+    /// JSON-RPC message ID (present for requests and responses).
     pub id: Option<String>,
 }
 

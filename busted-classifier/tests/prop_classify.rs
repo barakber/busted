@@ -143,8 +143,15 @@ fn pure_binary_payload() {
 // ---------------------------------------------------------------------------
 
 fn assert_provider(c: &Classification, expected: &str) {
-    assert!(c.is_interesting, "expected interesting for provider {expected}");
-    assert_eq!(c.provider(), Some(expected), "wrong provider, expected {expected}");
+    assert!(
+        c.is_interesting,
+        "expected interesting for provider {expected}"
+    );
+    assert_eq!(
+        c.provider(),
+        Some(expected),
+        "wrong provider, expected {expected}"
+    );
 }
 
 #[test]

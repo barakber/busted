@@ -218,7 +218,9 @@ proptest! {
 
 #[test]
 fn all_http_methods_detected() {
-    let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT"];
+    let methods = [
+        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT",
+    ];
     for method in methods {
         let line = format!("{method} / HTTP/1.1\r\n");
         assert!(

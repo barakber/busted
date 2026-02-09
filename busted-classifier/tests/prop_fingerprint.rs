@@ -76,7 +76,8 @@ fn different_headers_different_hash() {
 
 #[test]
 fn different_json_keys_different_hash() {
-    let raw1 = b"POST /v1/chat HTTP/1.1\r\nHost: example.com\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
+    let raw1 =
+        b"POST /v1/chat HTTP/1.1\r\nHost: example.com\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
     let raw2 = b"POST /v1/chat HTTP/1.1\r\nHost: example.com\r\n\r\n{\"model\":\"gpt-4\",\"prompt\":\"hello\"}";
     let req1 = http::parse_request(raw1).unwrap();
     let req2 = http::parse_request(raw2).unwrap();
@@ -306,7 +307,8 @@ fn build_fingerprint_full() {
 
 #[test]
 fn build_fingerprint_no_ua() {
-    let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{\"model\":\"gpt-4\"}";
+    let raw =
+        b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{\"model\":\"gpt-4\"}";
     let req = http::parse_request(raw).unwrap();
     let body = &raw[req.body_offset.unwrap()..];
     let jf = json::analyze(body);

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -e
+
+echo "==> cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "==> clippy (default features)"
+cargo clippy --workspace --exclude busted-ebpf -- -D warnings
+
+echo "==> clippy (all agent features)"
+cargo clippy -p busted-agent --features ml,tls,prometheus -- -D warnings
+
+echo "All checks passed."

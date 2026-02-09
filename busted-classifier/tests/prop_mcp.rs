@@ -41,9 +41,7 @@ fn all_mcp_methods_classified() {
     ];
 
     for (method, expected_category) in methods_and_categories {
-        let json_str = format!(
-            r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}},"id":1}}"#
-        );
+        let json_str = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}},"id":1}}"#);
         let fields = json::analyze(json_str.as_bytes());
         let mcp_info = mcp::classify(&fields);
         assert!(
@@ -80,9 +78,7 @@ fn non_mcp_jsonrpc_methods_rejected() {
     ];
 
     for method in non_mcp_methods {
-        let json_str = format!(
-            r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}},"id":1}}"#
-        );
+        let json_str = format!(r#"{{"jsonrpc":"2.0","method":"{method}","params":{{}},"id":1}}"#);
         let fields = json::analyze(json_str.as_bytes());
         let result = mcp::classify(&fields);
         assert!(
