@@ -1,10 +1,51 @@
-//! ML behavioral traffic classifier for LLM communication patterns.
+//! Identifies LLM API traffic from network behavior alone — no payload inspection
+//! required.
 //!
-//! `busted-ml` uses online machine learning to identify LLM API traffic from network
-//! behavior patterns, complementing the content-based classification in `busted-classifier`.
-//! It can detect LLM traffic even when payload inspection is unavailable (e.g., certificate
-//! pinning, HTTP/2 multiplexing) by learning from temporal and statistical features of
-//! network event sequences.
+//! # Why behavioral classification?
+//!
+//! Content-based classification (`busted-classifier`) works
+//! beautifully when you can read the payload: intercept TLS via eBPF uprobes, parse
+//! the HTTP, match the endpoint, done. But sometimes you *can't* read the payload.
+//! The application uses certificate pinning. The traffic is multiplexed over HTTP/2
+//! and you only see opaque frames. The process links a TLS library you don't have
+//! uprobes for. In all of these cases, content classification is blind.
+//!
+//! `busted-ml` takes a completely different approach. Instead of looking at *what* a
+//! process says, it watches *how* it talks to the network — timing between packets,
+//! sizes, bursts, port diversity — and learns to recognize LLM traffic from its
+//! behavioral signature.
+//!
+//! # The insight
+//!
+//! LLM API calls have a distinctive network fingerprint. A typical interaction looks
+//! like: large POST request (the prompt), long pause (model inference), then a burst
+//! of small chunked responses (token streaming). This pattern — big-send, wait,
+//! trickle-back — is very different from web browsing (many small GETs, fast
+//! responses), file downloads (one request, sustained transfer), or database traffic
+//! (rapid small round-trips). The ML model learns these signatures automatically from
+//! labeled examples.
+//!
+//! # How it works
+//!
+//! Each network event arriving from the eBPF layer gets compressed into one of 180
+//! discrete symbols — encoding the event type (connect, send, receive, close), a
+//! byte-size bucket, and a port class. These symbols accumulate in a per-process
+//! sliding window.
+//!
+//! When the window fills, a 352-dimensional feature vector is extracted: unigram,
+//! bigram, and trigram frequency histograms capture *what* happened; timing statistics
+//! and burst analysis capture *when*; connection diversity and entropy measures capture
+//! *where*. This feature vector is the input to two parallel classifiers.
+//!
+//! The **supervised path** feeds the features into a bagged ensemble of 100 decision
+//! trees (a random forest built on [`linfa`]). The forest is trained online — as new
+//! events arrive with IP-based ground truth labels from the agent, the model
+//! incrementally improves. It outputs a provider label and confidence score.
+//!
+//! The **unsupervised path** feeds the same features into [`hdbscan`] density-based
+//! clustering. This catches novel traffic patterns that the supervised model hasn't
+//! seen — a new LLM provider, an unusual SDK, or a tool using AI in an unexpected
+//! way. Novel clusters surface as `is_novel: true` in the result.
 //!
 //! # Architecture
 //!
@@ -19,6 +60,16 @@
 //!    forest via [`linfa`]) is trained online from IP-labeled ground truth.
 //! 4. **Unsupervised discovery** — [`hdbscan`] clustering detects novel traffic patterns
 //!    not captured by the supervised model.
+//!
+//! # Integration with Busted
+//!
+//! In the Busted agent, `busted-ml` sits behind the `ml` feature flag. The agent feeds
+//! every [`NetworkEvent`] to [`MlClassifier::process_event`],
+//! along with any IP-based provider label it already has. The returned
+//! [`BehaviorIdentity`] is folded into the
+//! `ProcessedEvent` as `ml_confidence`,
+//! `ml_provider`, `behavior_class`, and `cluster_id` fields. This means the UI and SIEM
+//! sinks get both content-based *and* behavioral classifications for every connection.
 //!
 //! # Usage
 //!

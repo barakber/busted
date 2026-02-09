@@ -1,22 +1,65 @@
-//! Standalone content classifier for decrypted TLS payloads.
+//! Tells you whether a decrypted TLS payload is an LLM API call, an MCP message, or
+//! just normal HTTP — in microseconds, from a single buffer, with no connection state.
 //!
-//! `busted-classifier` is a multi-layer analysis pipeline that classifies intercepted
-//! network traffic as LLM API calls, MCP protocol messages, or generic HTTP. It operates
-//! on raw byte slices without any connection state, making it safe to call from any context.
+//! # The problem
+//!
+//! Every major LLM provider (OpenAI, Anthropic, Google, AWS Bedrock, Cohere, Mistral,
+//! Groq, and more) serves its API over HTTPS. To a traditional network monitor, a
+//! `POST /v1/chat/completions` to `api.openai.com` looks identical to any other TLS
+//! connection — just encrypted bytes on port 443. Even after you've intercepted the
+//! plaintext (via eBPF uprobes on `SSL_write`/`SSL_read`), you're left with a raw byte
+//! buffer. Is it a GPT-4 request? A Claude conversation? An MCP tool invocation? Or
+//! someone browsing Reddit? This crate answers that question.
+//!
+//! `busted-classifier` encodes deep knowledge of LLM API shapes, MCP's JSON-RPC 2.0
+//! protocol, SDK user-agent strings, and streaming response formats into a fast,
+//! stateless classification pipeline. Hand it a `&[u8]` and a direction, and it tells
+//! you exactly what you're looking at.
+//!
+//! # How it works
+//!
+//! Classification flows through four layers, each adding detail:
+//!
+//! First, we figure out if the payload is even HTTP. The [`http`] module uses [`nom`]
+//! combinators to parse HTTP/1.1 request and response headers, detect HTTP/2 binary
+//! framing, and identify Server-Sent Events streams. If we can't parse it as HTTP, we
+//! still try — the payload might be a raw JSON body without framing.
+//!
+//! Next, we check whether the HTTP endpoint matches a known LLM provider. The [`llm`]
+//! module maintains a registry of API paths and host patterns — `/v1/chat/completions`
+//! on `api.openai.com`, `/v1/messages` on `api.anthropic.com`, and dozens more. It also
+//! inspects JSON response bodies for telltale fields like `choices`, `model`, and
+//! `completion`. The [`mcp`] module separately detects MCP JSON-RPC 2.0 methods
+//! (`tools/call`, `resources/read`, etc.) and categorizes them.
+//!
+//! Then we fingerprint the SDK. The [`fingerprint`] module extracts the `User-Agent`
+//! header (`openai-python/1.12.0`, `anthropic-typescript/0.19.0`), pulls model
+//! parameters from the JSON body, and computes a behavioral signature hash that can
+//! identify the same agent across requests.
+//!
+//! Finally, if the `pii` feature is enabled, the [`pii`] module scans the payload for
+//! leaked personally identifiable information — email addresses, credit card numbers,
+//! SSNs, phone numbers, and API keys — so you know when sensitive data is being sent
+//! to an LLM.
 //!
 //! # Architecture
 //!
-//! Classification proceeds through four layers:
+//! The four layers map to these modules:
 //!
-//! 1. **Protocol detection** — HTTP/1.1 request/response parsing (via [`nom`]),
-//!    HTTP/2 binary framing detection, and SSE stream identification.
-//! 2. **Content classification** — Matches against known LLM API endpoints
-//!    (OpenAI, Anthropic, Google, Azure, AWS Bedrock, Cohere, Mistral, Groq, etc.)
-//!    and detects MCP JSON-RPC 2.0 methods.
-//! 3. **Agent fingerprinting** — Extracts SDK name/version from `User-Agent` headers,
-//!    model parameters from JSON bodies, and computes a behavioral signature hash.
-//! 4. **PII detection** — Scans for email addresses, credit card numbers, SSNs,
-//!    phone numbers, and API keys (requires `pii` feature).
+//! 1. **Protocol detection** — HTTP/1.1 parsing (via [`nom`]), HTTP/2 binary framing,
+//!    SSE stream identification.
+//! 2. **Content classification** — LLM API endpoint matching, MCP JSON-RPC detection.
+//! 3. **Agent fingerprinting** — SDK extraction, model params, behavioral signature.
+//! 4. **PII detection** — Regex scanning for sensitive data patterns.
+//!
+//! # Integration with Busted
+//!
+//! In the Busted pipeline, `busted-agent` captures decrypted TLS payloads via eBPF
+//! uprobes, then calls [`classify()`] on the first chunk of each connection. The
+//! resulting [`Classification`] is folded into a
+//! `ProcessedEvent` and forwarded to the UI
+//! and SIEM sinks. The crate has no dependency on eBPF or aya — it's a pure Rust
+//! library that works anywhere you have bytes to classify.
 //!
 //! # Usage
 //!

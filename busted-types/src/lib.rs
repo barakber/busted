@@ -1,10 +1,46 @@
-//! Shared type definitions for the [Busted](https://github.com/barakber/busted) eBPF
-//! LLM/AI communication monitoring system.
+//! The data contract between kernel and userspace for
+//! [Busted](https://github.com/barakber/busted), the eBPF-based LLM/AI communication
+//! monitor.
 //!
-//! This crate defines the `#[repr(C)]` data structures shared between the eBPF kernel
-//! probes (`busted-ebpf`) and the userspace agent (`busted-agent`). All types are
-//! `no_std`-compatible by default and use fixed-size arrays to satisfy eBPF verifier
-//! constraints.
+//! When an eBPF probe fires inside the kernel — a TCP connection closes, an SSL handshake
+//! begins, a decrypted payload is captured — it needs to hand that event to userspace. The
+//! two sides share no heap, no allocator, and no serde. They share *these structs*: flat,
+//! `#[repr(C)]`, fixed-size types that the eBPF verifier can prove safe and that Rust can
+//! read directly out of a ring buffer with zero copies.
+//!
+//! # Why this crate exists
+//!
+//! eBPF programs run under extreme constraints: a 512-byte stack, no dynamic allocation,
+//! and a static verifier that rejects any code it can't prove terminates and stays in
+//! bounds. That means no `String`, no `Vec`, no trait objects. Every field must be a
+//! primitive or a fixed-length array, and every struct must be `Copy` and `#[repr(C)]` so
+//! the kernel and userspace agree on layout byte-for-byte.
+//!
+//! At the same time, the userspace agent needs to enrich these raw events with container
+//! metadata, classifier results, ML predictions, and human-readable formatting before
+//! forwarding them to the UI and SIEM sinks. Cramming all of that into `no_std` types
+//! would be painful and pointless.
+//!
+//! `busted-types` solves this by serving two audiences from one crate:
+//!
+//! - **eBPF side** (`no_std`, default) — just the wire types, nothing else.
+//! - **Userspace side** (`user` feature) — adds `aya::Pod` impls, serde, IP-to-string
+//!   helpers, and the enriched [`processed::ProcessedEvent`] that the rest of the system
+//!   consumes.
+//!
+//! # How data flows
+//!
+//! ```text
+//! ┌──────────────┐     #[repr(C)]      ┌──────────────┐     ProcessedEvent     ┌─────────┐
+//! │  eBPF probes │ ──── structs ──────▶ │ busted-agent │ ──── (NDJSON) ──────▶ │ UI/SIEM │
+//! │  (kernel)    │     via RingBuf      │ (userspace)  │     via Unix socket   │         │
+//! └──────────────┘                      └──────────────┘                       └─────────┘
+//! ```
+//!
+//! The eBPF probes write [`NetworkEvent`], [`TlsHandshakeEvent`], or [`TlsDataEvent`]
+//! into a shared ring buffer. The agent reads them out (using aya's `Pod` trait, enabled
+//! by the `user` feature), enriches them into a [`processed::ProcessedEvent`], and
+//! serializes that as NDJSON over a Unix socket.
 //!
 //! # Feature Flags
 //!

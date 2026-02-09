@@ -1,9 +1,41 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="ML behavioral traffic classifier for LLM communication patterns."><title>busted_ml - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="busted_ml" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (c7f5f3e0d 2026-02-07)" data-channel="nightly" data-search-js="search-fb33671b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-f9617a14.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-12f88f4f.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate busted_ml</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../busted_ml/index.html">busted_<wbr>ml</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#architecture" title="Architecture">Architecture</a></li><li><a href="#usage" title="Usage">Usage</a></li><li><a href="#key-types" title="Key Types">Key Types</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>busted_<wbr>ml</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/busted_ml/lib.rs.html#1-283">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>ML behavioral traffic classifier for LLM communication patterns.</p>
-<p><code>busted-ml</code> uses online machine learning to identify LLM API traffic from network
-behavior patterns, complementing the content-based classification in <code>busted-classifier</code>.
-It can detect LLM traffic even when payload inspection is unavailable (e.g., certificate
-pinning, HTTP/2 multiplexing) by learning from temporal and statistical features of
-network event sequences.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Identifies LLM API traffic from network behavior alone — no payload inspection required."><title>busted_ml - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-b7b9f40b.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="busted_ml" data-themes="" data-resource-suffix="" data-rustdoc-version="1.95.0-nightly (c7f5f3e0d 2026-02-07)" data-channel="nightly" data-search-js="search-fb33671b.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-170eb4bf.js" ><script src="../static.files/storage-f9617a14.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-12f88f4f.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate busted_ml</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../busted_ml/index.html">busted_<wbr>ml</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#why-behavioral-classification" title="Why behavioral classification?">Why behavioral classification?</a></li><li><a href="#the-insight" title="The insight">The insight</a></li><li><a href="#how-it-works" title="How it works">How it works</a></li><li><a href="#architecture" title="Architecture">Architecture</a></li><li><a href="#integration-with-busted" title="Integration with Busted">Integration with Busted</a></li><li><a href="#usage" title="Usage">Usage</a></li><li><a href="#key-types" title="Key Types">Key Types</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1>Crate <span>busted_<wbr>ml</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/busted_ml/lib.rs.html#1-334">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Identifies LLM API traffic from network behavior alone — no payload inspection
+required.</p>
+<h2 id="why-behavioral-classification"><a class="doc-anchor" href="#why-behavioral-classification">§</a>Why behavioral classification?</h2>
+<p>Content-based classification (<code>busted-classifier</code>) works
+beautifully when you can read the payload: intercept TLS via eBPF uprobes, parse
+the HTTP, match the endpoint, done. But sometimes you <em>can’t</em> read the payload.
+The application uses certificate pinning. The traffic is multiplexed over HTTP/2
+and you only see opaque frames. The process links a TLS library you don’t have
+uprobes for. In all of these cases, content classification is blind.</p>
+<p><code>busted-ml</code> takes a completely different approach. Instead of looking at <em>what</em> a
+process says, it watches <em>how</em> it talks to the network — timing between packets,
+sizes, bursts, port diversity — and learns to recognize LLM traffic from its
+behavioral signature.</p>
+<h2 id="the-insight"><a class="doc-anchor" href="#the-insight">§</a>The insight</h2>
+<p>LLM API calls have a distinctive network fingerprint. A typical interaction looks
+like: large POST request (the prompt), long pause (model inference), then a burst
+of small chunked responses (token streaming). This pattern — big-send, wait,
+trickle-back — is very different from web browsing (many small GETs, fast
+responses), file downloads (one request, sustained transfer), or database traffic
+(rapid small round-trips). The ML model learns these signatures automatically from
+labeled examples.</p>
+<h2 id="how-it-works"><a class="doc-anchor" href="#how-it-works">§</a>How it works</h2>
+<p>Each network event arriving from the eBPF layer gets compressed into one of 180
+discrete symbols — encoding the event type (connect, send, receive, close), a
+byte-size bucket, and a port class. These symbols accumulate in a per-process
+sliding window.</p>
+<p>When the window fills, a 352-dimensional feature vector is extracted: unigram,
+bigram, and trigram frequency histograms capture <em>what</em> happened; timing statistics
+and burst analysis capture <em>when</em>; connection diversity and entropy measures capture
+<em>where</em>. This feature vector is the input to two parallel classifiers.</p>
+<p>The <strong>supervised path</strong> feeds the features into a bagged ensemble of 100 decision
+trees (a random forest built on [<code>linfa</code>]). The forest is trained online — as new
+events arrive with IP-based ground truth labels from the agent, the model
+incrementally improves. It outputs a provider label and confidence score.</p>
+<p>The <strong>unsupervised path</strong> feeds the same features into [<code>hdbscan</code>] density-based
+clustering. This catches novel traffic patterns that the supervised model hasn’t
+seen — a new LLM provider, an unusual SDK, or a tool using AI in an unexpected
+way. Novel clusters surface as <code>is_novel: true</code> in the result.</p>
 <h2 id="architecture"><a class="doc-anchor" href="#architecture">§</a>Architecture</h2>
 <p>The classifier operates on a per-PID sliding window of <a href="../busted_types/struct.NetworkEvent.html" title="struct busted_types::NetworkEvent"><code>busted_types::NetworkEvent</code></a>s:</p>
 <ol>
@@ -17,6 +49,14 @@ forest via [<code>linfa</code>]) is trained online from IP-labeled ground truth.
 <li><strong>Unsupervised discovery</strong> — [<code>hdbscan</code>] clustering detects novel traffic patterns
 not captured by the supervised model.</li>
 </ol>
+<h2 id="integration-with-busted"><a class="doc-anchor" href="#integration-with-busted">§</a>Integration with Busted</h2>
+<p>In the Busted agent, <code>busted-ml</code> sits behind the <code>ml</code> feature flag. The agent feeds
+every <a href="../busted_types/struct.NetworkEvent.html" title="struct busted_types::NetworkEvent"><code>NetworkEvent</code></a> to <a href="struct.MlClassifier.html#method.process_event" title="method busted_ml::MlClassifier::process_event"><code>MlClassifier::process_event</code></a>,
+along with any IP-based provider label it already has. The returned
+<a href="struct.BehaviorIdentity.html" title="struct busted_ml::BehaviorIdentity"><code>BehaviorIdentity</code></a> is folded into the
+<code>ProcessedEvent</code> as <code>ml_confidence</code>,
+<code>ml_provider</code>, <code>behavior_class</code>, and <code>cluster_id</code> fields. This means the UI and SIEM
+sinks get both content-based <em>and</em> behavioral classifications for every connection.</p>
 <h2 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h2>
 <div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>busted_ml::MlClassifier;
 <span class="kw">use </span>std::time::Duration;
