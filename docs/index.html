@@ -1,1 +1,191 @@
-<meta http-equiv="refresh" content="0; url=busted_types/index.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Busted — eBPF-based LLM/AI Communication Monitor</title>
+<style>
+:root {
+  --bg: #fff;
+  --fg: #333;
+  --fg-dim: #666;
+  --accent: #4d76ae;
+  --border: #e0e0e0;
+  --code-bg: #f5f5f5;
+  --card-bg: #fafafa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #ddd;
+    --fg-dim: #999;
+    --accent: #6fa8dc;
+    --border: #444;
+    --code-bg: #2a2a2a;
+    --card-bg: #252525;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Source Serif 4", "Noto Serif", Georgia, serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.6;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+h1, h2, h3 {
+  font-family: "Fira Sans", "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+}
+h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+.subtitle { color: var(--fg-dim); font-size: 1.1rem; margin-bottom: 2rem; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+pre {
+  background: var(--code-bg);
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-family: "Fira Code", "Source Code Pro", "Cascadia Code", monospace;
+}
+.crates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.crate-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.1rem 1.2rem;
+}
+.crate-card h3 {
+  font-size: 1.05rem;
+  margin-bottom: 0.35rem;
+  font-family: "Fira Code", "Source Code Pro", monospace;
+  font-weight: 500;
+}
+.crate-card p { font-size: 0.92rem; color: var(--fg-dim); }
+.links { margin-top: 2.5rem; font-size: 0.95rem; }
+.links a { margin-right: 1.5rem; }
+footer { margin-top: 3rem; font-size: 0.85rem; color: var(--fg-dim); border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>Busted</h1>
+<p class="subtitle">eBPF-based LLM &amp; AI communication monitoring for Linux</p>
+
+<p>
+Busted uses eBPF probes to observe every network connection a process makes — including
+decrypted TLS payloads — and classifies traffic as LLM API calls, MCP tool invocations,
+or ordinary HTTP, with zero application changes.
+It combines content-based analysis (HTTP/JSON parsing of intercepted plaintext) with
+behavioral ML classification (traffic-pattern recognition when payloads are unavailable)
+to give security teams full visibility into AI-related communications.
+</p>
+
+<h2>Architecture</h2>
+
+<pre>
+┌──────────────────────────── Kernel Space (eBPF) ────────────────────────────┐
+│                                                                             │
+│  Kprobes                          Uprobes (OpenSSL)         LSM            │
+│  ┌─────────────┐                  ┌──────────────────┐   ┌──────────────┐  │
+│  │tcp_connect   │                  │ssl_ctrl_sni      │   │socket_connect│  │
+│  │tcp_sendmsg   │                  │ssl_write_entry   │   │  (enforce)   │  │
+│  │tcp_recvmsg   │                  │ssl_read_entry    │   └──────────────┘  │
+│  │tcp_close     │                  │ssl_read_ret      │                     │
+│  │udp_sendmsg   │                  │ssl_free_cleanup  │                     │
+│  └──────┬───────┘                  └────────┬─────────┘                     │
+│         │                                   │                               │
+│         └───────────┬───────────────────────┘                               │
+│                     │                                                       │
+│              ┌──────▼──────┐    ┌───────────────────┐                       │
+│              │  EVENTS     │    │ TLS_CONN_VERDICT   │◄── userspace writes  │
+│              │ (RingBuf    │    │ (HashMap)          │    verdict back      │
+│              │  512KB)     │    └───────────────────┘                       │
+│              └──────┬──────┘                                                │
+└─────────────────────┼──────────────────────────────────────────────────────┘
+                      │
+┌─────────────────────▼──────────────────────────────────────────────────────┐
+│                         Userspace Agent (Rust/Tokio)                        │
+│                                                                             │
+│  ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐   │
+│  │ Event Dispatch   │  │ TLS Analysis     │  │ Provider Classification │   │
+│  │ • NetworkEvent   │  │ • First-chunk    │  │ • DNS resolution        │   │
+│  │ • TlsHandshake   │  │   LLM/MCP detect │  │ • IP/subnet matching   │   │
+│  │ • TlsDataEvent   │  │ • Verdict→eBPF   │  │ • SNI classification   │   │
+│  └────────┬────────┘  └──────────────────┘  └──────────────────────────┘   │
+│           │                                                                 │
+│  ┌────────▼────────────────────────────────────────────────┐               │
+│  │              Broadcast Channel (tokio)                   │               │
+│  └──┬──────────┬──────────────┬─────────────┬──────────────┘               │
+│     │          │              │             │                               │
+│  ┌──▼──┐  ┌───▼────┐  ┌─────▼─────┐  ┌───▼──────┐                        │
+│  │ CLI │  │ Socket │  │   SIEM    │  │ ML       │                        │
+│  │ out │  │ server │  │ (webhook, │  │ classify │                        │
+│  └─────┘  └───┬────┘  │  file,    │  └──────────┘                        │
+│               │       │  syslog)  │                                       │
+│               │       └───────────┘                                       │
+└───────────────┼───────────────────────────────────────────────────────────┘
+                │
+        ┌───────▼───────┐
+        │  busted-ui    │
+        │  (egui native │
+        │   dashboard)  │
+        └───────────────┘
+</pre>
+
+<h2>Crate Documentation</h2>
+
+<div class="crates">
+  <div class="crate-card">
+    <h3><a href="busted_types/index.html">busted_types</a></h3>
+    <p>
+      The data contract between kernel and userspace.
+      Flat, <code>#[repr(C)]</code>, fixed-size types that travel through the eBPF
+      ring buffer with zero copies.
+    </p>
+  </div>
+  <div class="crate-card">
+    <h3><a href="busted_classifier/index.html">busted_classifier</a></h3>
+    <p>
+      Stateless content classification for decrypted TLS payloads.
+      Identifies LLM API calls, MCP JSON-RPC messages, SDK fingerprints,
+      and PII — in microseconds from a single buffer.
+    </p>
+  </div>
+  <div class="crate-card">
+    <h3><a href="busted_ml/index.html">busted_ml</a></h3>
+    <p>
+      Behavioral traffic classifier that identifies LLM API traffic from
+      network patterns alone — packet timing, sizes, bursts — when payload
+      inspection is unavailable.
+    </p>
+  </div>
+  <div class="crate-card">
+    <h3><a href="busted_ui/index.html">busted_ui</a></h3>
+    <p>
+      Native egui dashboard that connects to the agent over a Unix socket
+      and displays live classified events. Includes a demo mode for quick evaluation.
+    </p>
+  </div>
+</div>
+
+<div class="links">
+  <a href="https://github.com/barakber/busted">GitHub Repository</a>
+</div>
+
+<footer>
+  Generated by the Busted docs workflow. Crate documentation is built with <code>cargo doc</code>.
+</footer>
+
+</body>
+</html>
