@@ -284,4 +284,141 @@ mod tests {
         assert!(looks_like_http_response(b"HTTP/1.1 200 OK\r\n"));
         assert!(!looks_like_http_response(b"POST / HTTP/1.1\r\n"));
     }
+
+    // ---- Edge-case tests ----
+
+    #[test]
+    fn lf_only_line_endings_fail_parse() {
+        let raw = b"POST /v1/chat HTTP/1.1\nHost: example.com\n\n";
+        assert!(parse_request(raw).is_none());
+    }
+
+    #[test]
+    fn header_value_with_colon() {
+        let raw = b"POST / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.headers.get("host").unwrap(), "example.com:8080");
+    }
+
+    #[test]
+    fn http_10_version() {
+        let raw = b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.version, "HTTP/1.0");
+        assert_eq!(resp.status_code, 200);
+    }
+
+    #[test]
+    fn path_with_query_string() {
+        let raw =
+            b"POST /v1/chat/completions?api-version=2024 HTTP/1.1\r\nHost: api.openai.com\r\n\r\n";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.path, "/v1/chat/completions?api-version=2024");
+    }
+
+    #[test]
+    fn empty_header_value_fails_nom() {
+        // nom take_while1 requires at least 1 char, so empty value fails
+        let raw = b"POST / HTTP/1.1\r\nHost: \r\n\r\n";
+        // This should still parse the request line but stop at the empty header
+        let req = parse_request(raw);
+        // The parse should succeed for request line but header value won't parse
+        assert!(req.is_some());
+    }
+
+    #[test]
+    fn mask_auth_short_value() {
+        assert_eq!(mask_auth("sk-123"), "[redacted]");
+        assert_eq!(mask_auth(""), "[redacted]");
+        assert_eq!(mask_auth("exactlytwelv"), "[redacted]"); // 12 chars
+    }
+
+    #[test]
+    fn mask_auth_13_chars() {
+        let masked = mask_auth("1234567890abc");
+        assert_eq!(masked, "12345678...0abc");
+    }
+
+    #[test]
+    fn mask_auth_long_value() {
+        let masked = mask_auth("Bearer sk-1234567890abcdefghij");
+        assert!(masked.starts_with("Bearer s"));
+        assert!(masked.contains("..."));
+        assert!(masked.ends_with("ghij"));
+    }
+
+    #[test]
+    fn http2_frame_type_boundary() {
+        // Frame type 9 is CONTINUATION (last valid), should match
+        let mut frame = vec![0x00, 0x00, 0x01, 9, 0x00, 0x00, 0x00, 0x00, 0x01];
+        assert!(is_http2_binary(&frame));
+
+        // Frame type 10 is invalid
+        frame[3] = 10;
+        assert!(!is_http2_binary(&frame));
+    }
+
+    #[test]
+    fn http2_frame_zero_length() {
+        // length=0 should NOT match (our code requires len > 0)
+        let frame = vec![0x00, 0x00, 0x00, 0, 0x00, 0x00, 0x00, 0x00, 0x01];
+        assert!(!is_http2_binary(&frame));
+    }
+
+    #[test]
+    fn http2_frame_high_bit_set_in_stream_id() {
+        // byte[5] high bit set → stream ID reserved bit → no match
+        let frame = vec![0x00, 0x00, 0x01, 0, 0x00, 0x80, 0x00, 0x00, 0x01];
+        assert!(!is_http2_binary(&frame));
+    }
+
+    #[test]
+    fn non_interesting_headers_filtered() {
+        let raw = b"POST / HTTP/1.1\r\nHost: example.com\r\nX-Custom: value\r\nConnection: keep-alive\r\n\r\n";
+        let req = parse_request(raw).unwrap();
+        assert!(req.headers.contains_key("host"));
+        assert!(!req.headers.contains_key("x-custom"));
+        assert!(!req.headers.contains_key("connection"));
+    }
+
+    #[test]
+    fn x_api_key_masked() {
+        let raw = b"POST / HTTP/1.1\r\nX-Api-Key: sk-secret-key-12345\r\n\r\n";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.headers.get("x-api-key").unwrap(), "[present]");
+    }
+
+    #[test]
+    fn all_http_methods_detected() {
+        for method in &[
+            "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT",
+        ] {
+            let raw = format!("{} / HTTP/1.1\r\n", method);
+            assert!(
+                looks_like_http_request(raw.as_bytes()),
+                "should detect {}",
+                method
+            );
+        }
+    }
+
+    #[test]
+    fn parse_response_404() {
+        let raw = b"HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<h1>Not Found</h1>";
+        let resp = parse_response(raw).unwrap();
+        assert_eq!(resp.status_code, 404);
+        assert_eq!(resp.reason, "Not Found");
+        assert!(resp.body_offset.is_some());
+    }
+
+    #[test]
+    fn empty_input_returns_none() {
+        assert!(parse_request(b"").is_none());
+        assert!(parse_response(b"").is_none());
+    }
+
+    #[test]
+    fn looks_like_http_response_http10() {
+        assert!(looks_like_http_response(b"HTTP/1.0 301 Moved\r\n"));
+    }
 }

@@ -308,6 +308,69 @@ impl MlClassifier {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn ml_classifier_new_default() {
+        let c = MlClassifier::new();
+        assert!(c.windows.is_empty());
+        assert!(c.training_buffer.is_empty());
+    }
+
+    #[test]
+    fn ml_classifier_default_trait() {
+        let c = MlClassifier::default();
+        assert!(c.windows.is_empty());
+    }
+
+    #[test]
+    fn compute_signature_short_features_returns_zero() {
+        assert_eq!(compute_signature(&[1.0; 10]), 0);
+    }
+
+    #[test]
+    fn compute_signature_deterministic() {
+        let features = vec![0.1; 352];
+        let h1 = compute_signature(&features);
+        let h2 = compute_signature(&features);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn compute_signature_different_inputs_different_hashes() {
+        let mut f1 = vec![0.0; 352];
+        f1[180] = 1.0; // first bigram bin
+        let mut f2 = vec![0.0; 352];
+        f2[181] = 1.0; // second bigram bin
+        assert_ne!(compute_signature(&f1), compute_signature(&f2));
+    }
+
+    #[test]
+    fn behavior_class_display() {
+        assert_eq!(
+            BehaviorClass::LlmApi("OpenAI".into()).to_string(),
+            "LlmApi(OpenAI)"
+        );
+        assert_eq!(BehaviorClass::GenericHttps.to_string(), "GenericHttps");
+        assert_eq!(BehaviorClass::DnsHeavy.to_string(), "DnsHeavy");
+        assert_eq!(BehaviorClass::Unknown.to_string(), "Unknown");
+    }
+
+    #[test]
+    fn gc_idle_pids_removes_stale() {
+        let mut c = MlClassifier::new();
+        // Insert a window manually
+        c.windows.insert(1, window::EventWindow::new(1));
+        c.windows.insert(2, window::EventWindow::new(2));
+        // Both windows have no events → last_arrival() is None → removed
+        c.gc_idle_pids(Duration::from_secs(60));
+        assert!(c.windows.is_empty());
+    }
+}
+
 /// Hash the top-5 bigram bin values as a behavioral signature.
 fn compute_signature(features: &[f64]) -> u64 {
     let bigram_start = symbol::SYMBOL_SPACE;

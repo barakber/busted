@@ -497,4 +497,149 @@ mod tests {
         assert_eq!(info.provider, "OpenAI");
         assert_eq!(info.stream_type, "sse");
     }
+
+    // ---- Edge-case tests ----
+
+    #[test]
+    fn test_query_parameters_in_path() {
+        let raw = b"POST /v1/chat/completions?api-version=2024 HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+    }
+
+    #[test]
+    fn test_host_header_with_port() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+    }
+
+    #[test]
+    fn test_azure_no_host_constraint() {
+        let raw = b"POST /openai/deployments/my-model/chat/completions HTTP/1.1\r\nHost: my-instance.openai.azure.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Azure");
+    }
+
+    #[test]
+    fn test_bedrock_contains_match() {
+        let raw = b"POST /model/anthropic.claude-v2/invoke HTTP/1.1\r\nHost: bedrock-runtime.us-east-1.amazonaws.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "AWS Bedrock");
+    }
+
+    #[test]
+    fn test_sse_no_space_after_data_colon() {
+        let text = "data:{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}";
+        let info = detect_sse_stream(text, None).unwrap();
+        assert_eq!(info.stream_type, "sse");
+    }
+
+    #[test]
+    fn test_sse_anthropic_markers() {
+        let text = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
+        let info = detect_sse_stream(text, None).unwrap();
+        assert_eq!(info.provider, "Anthropic");
+    }
+
+    #[test]
+    fn test_sse_generic_model_content() {
+        let text = "data: {\"model\":\"llama\",\"content\":\"test\"}\n\n";
+        let info = detect_sse_stream(text, None).unwrap();
+        assert_eq!(info.provider, "Unknown");
+    }
+
+    #[test]
+    fn test_sse_no_match() {
+        let text = "data: some random text without json\n\n";
+        assert!(detect_sse_stream(text, None).is_none());
+    }
+
+    #[test]
+    fn test_sni_provider_mapping() {
+        assert_eq!(provider_from_sni(Some("api.openai.com")), Some("OpenAI"));
+        assert_eq!(
+            provider_from_sni(Some("api.anthropic.com")),
+            Some("Anthropic")
+        );
+        assert_eq!(
+            provider_from_sni(Some("generativelanguage.googleapis.com")),
+            Some("Google")
+        );
+        assert_eq!(
+            provider_from_sni(Some("something.azure.com")),
+            Some("Azure")
+        );
+        assert_eq!(
+            provider_from_sni(Some("bedrock.us-east-1.amazonaws.com")),
+            Some("AWS Bedrock")
+        );
+        assert_eq!(provider_from_sni(Some("api.cohere.ai")), Some("Cohere"));
+        assert_eq!(provider_from_sni(Some("api.mistral.ai")), Some("Mistral"));
+        assert_eq!(provider_from_sni(Some("api.groq.com")), Some("Groq"));
+        assert_eq!(
+            provider_from_sni(Some("api.together.xyz")),
+            Some("Together")
+        );
+        assert_eq!(
+            provider_from_sni(Some("api.deepseek.com")),
+            Some("DeepSeek")
+        );
+        assert_eq!(
+            provider_from_sni(Some("api.perplexity.ai")),
+            Some("Perplexity")
+        );
+    }
+
+    #[test]
+    fn test_sni_case_insensitive() {
+        assert_eq!(provider_from_sni(Some("API.OPENAI.COM")), Some("OpenAI"));
+        assert_eq!(
+            provider_from_sni(Some("Api.Anthropic.Com")),
+            Some("Anthropic")
+        );
+    }
+
+    #[test]
+    fn test_sni_unknown_host() {
+        assert_eq!(provider_from_sni(Some("example.com")), None);
+        assert_eq!(provider_from_sni(None), None);
+    }
+
+    #[test]
+    fn test_no_match_get_on_post_only_endpoint() {
+        let raw = b"GET /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\n\r\n";
+        let req = http::parse_request(raw).unwrap();
+        // OpenAI chat/completions requires POST
+        let info = match_request(&req, None);
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_response_legacy_completion() {
+        let body = br#"{"completion":"Hello world","model":"text-davinci-003"}"#;
+        let jf = json::analyze(body);
+        let info = classify_response(&jf, None).unwrap();
+        assert_eq!(info.endpoint, "completions");
+    }
+
+    #[test]
+    fn test_response_anthropic_style() {
+        let body = br#"{"content":[{"type":"text","text":"Hi"}],"model":"claude-3"}"#;
+        let jf = json::analyze(body);
+        let info = classify_response(&jf, Some("api.anthropic.com")).unwrap();
+        assert_eq!(info.provider, "Anthropic");
+        assert_eq!(info.endpoint, "messages");
+    }
+
+    #[test]
+    fn test_response_no_match() {
+        let body = br#"{"status":"ok","data":[]}"#;
+        let jf = json::analyze(body);
+        assert!(classify_response(&jf, None).is_none());
+    }
 }

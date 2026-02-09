@@ -502,6 +502,228 @@ pub mod processed {
     }
 }
 
+// ---- Tests for no_std core (no `user` feature needed) ----
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Constructor tests: new() returns zero-initialized structs --
+
+    #[test]
+    fn network_event_new_is_zeroed() {
+        let e = NetworkEvent::new();
+        assert_eq!(e.pid, 0);
+        assert_eq!(e.tid, 0);
+        assert_eq!(e.uid, 0);
+        assert_eq!(e.gid, 0);
+        assert_eq!(e.cgroup_id, 0);
+        assert_eq!(e.event_type, 0);
+        assert_eq!(e.family, 0);
+        assert_eq!(e.sport, 0);
+        assert_eq!(e.dport, 0);
+        assert_eq!(e.bytes, 0);
+        assert_eq!(e.timestamp_ns, 0);
+        assert_eq!(e.comm, [0u8; TASK_COMM_LEN]);
+        assert_eq!(e.container_id, [0u8; CONTAINER_ID_LEN]);
+        assert_eq!(e.cgroup, [0u8; CGROUP_PATH_LEN]);
+    }
+
+    #[test]
+    fn tls_handshake_event_new_defaults() {
+        let e = TlsHandshakeEvent::new();
+        assert_eq!(e.event_type, 6);
+        assert_eq!(e._pad, [0; 3]);
+        assert_eq!(e.pid, 0);
+        assert_eq!(e.tid, 0);
+        assert_eq!(e.timestamp_ns, 0);
+        assert_eq!(e.comm, [0u8; TASK_COMM_LEN]);
+        assert_eq!(e.sni, [0u8; SNI_MAX_LEN]);
+    }
+
+    #[test]
+    fn tls_data_event_new_defaults() {
+        let e = TlsDataEvent::new();
+        assert_eq!(e.event_type, 7);
+        assert_eq!(e.direction, 0);
+        assert_eq!(e.payload_len, 0);
+        assert_eq!(e.pid, 0);
+        assert_eq!(e.tid, 0);
+        assert_eq!(e.ssl_ptr, 0);
+        assert_eq!(e.timestamp_ns, 0);
+        assert_eq!(e.is_first_chunk, 0);
+        assert_eq!(e.payload, [0u8; TLS_PAYLOAD_MAX]);
+    }
+
+    #[test]
+    fn tls_conn_key_new_defaults() {
+        let k = TlsConnKey::new();
+        assert_eq!(k.pid, 0);
+        assert_eq!(k._pad, 0);
+        assert_eq!(k.ssl_ptr, 0);
+    }
+
+    #[test]
+    fn agent_identity_new_defaults() {
+        let a = AgentIdentity::new();
+        assert_eq!(a.pid, 0);
+        assert_eq!(a.uid, 0);
+        assert_eq!(a.cgroup_id, 0);
+        assert_eq!(a.exec_hash, [0u8; 32]);
+        assert_eq!(a.comm, [0u8; TASK_COMM_LEN]);
+        assert_eq!(a.container_id, [0u8; CONTAINER_ID_LEN]);
+        assert_eq!(a.created_at_ns, 0);
+    }
+
+    // -- Default == new --
+
+    #[test]
+    fn network_event_default_equals_new() {
+        let d = NetworkEvent::default();
+        let n = NetworkEvent::new();
+        assert_eq!(d.pid, n.pid);
+        assert_eq!(d.event_type, n.event_type);
+        assert_eq!(d.bytes, n.bytes);
+    }
+
+    #[test]
+    fn tls_handshake_default_equals_new() {
+        let d = TlsHandshakeEvent::default();
+        let n = TlsHandshakeEvent::new();
+        assert_eq!(d.event_type, n.event_type);
+        assert_eq!(d.pid, n.pid);
+    }
+
+    #[test]
+    fn tls_data_default_equals_new() {
+        let d = TlsDataEvent::default();
+        let n = TlsDataEvent::new();
+        assert_eq!(d.event_type, n.event_type);
+        assert_eq!(d.payload_len, n.payload_len);
+    }
+
+    #[test]
+    fn tls_conn_key_default_equals_new() {
+        let d = TlsConnKey::default();
+        let n = TlsConnKey::new();
+        assert_eq!(d.pid, n.pid);
+        assert_eq!(d.ssl_ptr, n.ssl_ptr);
+    }
+
+    #[test]
+    fn agent_identity_default_equals_new() {
+        let d = AgentIdentity::default();
+        let n = AgentIdentity::new();
+        assert_eq!(d.pid, n.pid);
+        assert_eq!(d.created_at_ns, n.created_at_ns);
+    }
+
+    // -- IpAddress --
+
+    #[test]
+    fn ip_address_zero() {
+        let ip = IpAddress::zero();
+        assert_eq!(unsafe { ip.ipv4 }, 0);
+    }
+
+    // -- Enum discriminants --
+
+    #[test]
+    fn event_type_discriminants() {
+        assert_eq!(EventType::TcpConnect as u8, 1);
+        assert_eq!(EventType::DataSent as u8, 2);
+        assert_eq!(EventType::DataReceived as u8, 3);
+        assert_eq!(EventType::ConnectionClosed as u8, 4);
+        assert_eq!(EventType::DnsQuery as u8, 5);
+        assert_eq!(EventType::TlsHandshake as u8, 6);
+        assert_eq!(EventType::TlsDataWrite as u8, 7);
+        assert_eq!(EventType::TlsDataRead as u8, 8);
+    }
+
+    #[test]
+    fn address_family_discriminants() {
+        assert_eq!(AddressFamily::Ipv4 as u16, 2);
+        assert_eq!(AddressFamily::Ipv6 as u16, 10);
+        assert_eq!(AddressFamily::Unknown as u16, 0);
+    }
+
+    #[test]
+    fn llm_provider_discriminants() {
+        assert_eq!(LlmProvider::Unknown as u8, 0);
+        assert_eq!(LlmProvider::OpenAI as u8, 1);
+        assert_eq!(LlmProvider::Anthropic as u8, 2);
+        assert_eq!(LlmProvider::Google as u8, 3);
+        assert_eq!(LlmProvider::Azure as u8, 4);
+        assert_eq!(LlmProvider::AWS as u8, 5);
+        assert_eq!(LlmProvider::Cohere as u8, 6);
+        assert_eq!(LlmProvider::HuggingFace as u8, 7);
+        assert_eq!(LlmProvider::Local as u8, 8);
+    }
+
+    #[test]
+    fn policy_decision_discriminants() {
+        assert_eq!(PolicyDecision::Allow as u8, 0);
+        assert_eq!(PolicyDecision::Deny as u8, 1);
+        assert_eq!(PolicyDecision::Audit as u8, 2);
+    }
+
+    // -- Constants --
+
+    #[test]
+    fn constants_correct() {
+        assert_eq!(TASK_COMM_LEN, 16);
+        assert_eq!(CONTAINER_ID_LEN, 64);
+        assert_eq!(CGROUP_PATH_LEN, 128);
+        assert_eq!(SNI_MAX_LEN, 128);
+        assert_eq!(TLS_PAYLOAD_MAX, 512);
+    }
+
+    // -- Field mutation (validates #[repr(C)] has no overlap) --
+
+    #[test]
+    fn network_event_field_mutation() {
+        let mut e = NetworkEvent::new();
+        e.pid = 42;
+        e.tid = 100;
+        e.uid = 1000;
+        e.gid = 1000;
+        e.cgroup_id = 0xdeadbeef;
+        e.event_type = 1;
+        e.family = 2;
+        e.sport = 12345;
+        e.dport = 443;
+        e.bytes = 1024;
+        e.timestamp_ns = 999_999_999;
+        assert_eq!(e.pid, 42);
+        assert_eq!(e.tid, 100);
+        assert_eq!(e.uid, 1000);
+        assert_eq!(e.gid, 1000);
+        assert_eq!(e.cgroup_id, 0xdeadbeef);
+        assert_eq!(e.event_type, 1);
+        assert_eq!(e.family, 2);
+        assert_eq!(e.sport, 12345);
+        assert_eq!(e.dport, 443);
+        assert_eq!(e.bytes, 1024);
+        assert_eq!(e.timestamp_ns, 999_999_999);
+    }
+
+    #[test]
+    fn tls_data_event_field_mutation() {
+        let mut e = TlsDataEvent::new();
+        e.event_type = 8;
+        e.direction = 1;
+        e.payload_len = 256;
+        e.pid = 99;
+        e.ssl_ptr = 0xCAFEBABE;
+        e.is_first_chunk = 1;
+        assert_eq!(e.event_type, 8);
+        assert_eq!(e.direction, 1);
+        assert_eq!(e.payload_len, 256);
+        assert_eq!(e.pid, 99);
+        assert_eq!(e.ssl_ptr, 0xCAFEBABE);
+        assert_eq!(e.is_first_chunk, 1);
+    }
+}
+
 /// Userspace helper methods for eBPF event types (requires `user` feature).
 #[cfg(feature = "user")]
 pub mod userspace {

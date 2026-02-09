@@ -171,3 +171,145 @@ impl TrainedClassifier {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- LabelEncoder tests --
+
+    #[test]
+    fn label_encoder_new_empty() {
+        let enc = LabelEncoder::new();
+        assert_eq!(enc.num_classes(), 0);
+    }
+
+    #[test]
+    fn label_encoder_encode_new_label() {
+        let mut enc = LabelEncoder::new();
+        assert_eq!(enc.encode("OpenAI"), 0);
+        assert_eq!(enc.encode("Anthropic"), 1);
+        assert_eq!(enc.num_classes(), 2);
+    }
+
+    #[test]
+    fn label_encoder_encode_existing_label() {
+        let mut enc = LabelEncoder::new();
+        enc.encode("OpenAI");
+        assert_eq!(enc.encode("OpenAI"), 0); // same index
+        assert_eq!(enc.num_classes(), 1);
+    }
+
+    #[test]
+    fn label_encoder_decode() {
+        let mut enc = LabelEncoder::new();
+        enc.encode("OpenAI");
+        enc.encode("Anthropic");
+        assert_eq!(enc.decode(0), Some("OpenAI"));
+        assert_eq!(enc.decode(1), Some("Anthropic"));
+    }
+
+    #[test]
+    fn label_encoder_decode_invalid() {
+        let enc = LabelEncoder::new();
+        assert_eq!(enc.decode(0), None);
+        assert_eq!(enc.decode(999), None);
+    }
+
+    // -- TrainedClassifier tests --
+
+    #[test]
+    fn untrained_returns_none() {
+        let c = TrainedClassifier::new();
+        assert!(!c.is_trained());
+        let features = Array1::zeros(FEATURE_DIM);
+        assert!(c.predict(&features).is_none());
+    }
+
+    #[test]
+    fn too_few_samples_returns_err() {
+        let mut c = TrainedClassifier::new();
+        let samples: Vec<(Array1<f64>, String)> = (0..10)
+            .map(|_| (Array1::zeros(FEATURE_DIM), "ClassA".to_string()))
+            .collect();
+        let result = c.train(&samples);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least"));
+    }
+
+    #[test]
+    fn single_class_returns_err() {
+        let mut c = TrainedClassifier::new();
+        let samples: Vec<(Array1<f64>, String)> = (0..60)
+            .map(|_| (Array1::zeros(FEATURE_DIM), "OnlyOne".to_string()))
+            .collect();
+        let result = c.train(&samples);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("2 classes"));
+    }
+
+    #[test]
+    fn train_and_predict_two_classes() {
+        let mut c = TrainedClassifier::new();
+        let mut samples = Vec::new();
+
+        // ClassA: features = 1.0 for first 10 dims
+        for _ in 0..50 {
+            let mut f = Array1::zeros(FEATURE_DIM);
+            for i in 0..10 {
+                f[i] = 1.0;
+            }
+            samples.push((f, "ClassA".to_string()));
+        }
+
+        // ClassB: features = 1.0 for dims 100-110
+        for _ in 0..50 {
+            let mut f = Array1::zeros(FEATURE_DIM);
+            for i in 100..110 {
+                f[i] = 1.0;
+            }
+            samples.push((f, "ClassB".to_string()));
+        }
+
+        c.train(&samples).unwrap();
+        assert!(c.is_trained());
+
+        // Predict a ClassA-like vector
+        let mut test_a = Array1::zeros(FEATURE_DIM);
+        for i in 0..10 {
+            test_a[i] = 1.0;
+        }
+        let (label, confidence) = c.predict(&test_a).unwrap();
+        assert_eq!(label, "ClassA");
+        assert!(confidence > 0.5);
+
+        // Predict a ClassB-like vector
+        let mut test_b = Array1::zeros(FEATURE_DIM);
+        for i in 100..110 {
+            test_b[i] = 1.0;
+        }
+        let (label_b, _) = c.predict(&test_b).unwrap();
+        assert_eq!(label_b, "ClassB");
+    }
+
+    #[test]
+    fn confidence_is_valid_range() {
+        let mut c = TrainedClassifier::new();
+        let mut samples = Vec::new();
+        for _ in 0..30 {
+            let mut f = Array1::zeros(FEATURE_DIM);
+            f[0] = 1.0;
+            samples.push((f, "A".to_string()));
+        }
+        for _ in 0..30 {
+            let mut f = Array1::zeros(FEATURE_DIM);
+            f[1] = 1.0;
+            samples.push((f, "B".to_string()));
+        }
+        c.train(&samples).unwrap();
+
+        let f = Array1::zeros(FEATURE_DIM);
+        let (_, conf) = c.predict(&f).unwrap();
+        assert!(conf >= 0.0 && conf <= 1.0);
+    }
+}

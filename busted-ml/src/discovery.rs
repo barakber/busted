@@ -96,3 +96,53 @@ impl PatternDiscovery {
             .map_or(0, |&m| (m + 1) as usize)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::FEATURE_DIM;
+
+    #[test]
+    fn new_num_clusters_zero() {
+        let d = PatternDiscovery::new();
+        assert_eq!(d.num_clusters(), 0);
+    }
+
+    #[test]
+    fn new_last_cluster_label_negative() {
+        let d = PatternDiscovery::new();
+        assert_eq!(d.last_cluster_label(), -1);
+    }
+
+    #[test]
+    fn ingest_returns_negative_initially() {
+        let mut d = PatternDiscovery::new();
+        let features = vec![0.0f64; FEATURE_DIM];
+        let label = d.ingest(&features);
+        assert_eq!(label, -1);
+    }
+
+    #[test]
+    fn buffer_under_limit_no_panic() {
+        let mut d = PatternDiscovery::new();
+        for i in 0..100 {
+            let features: Vec<f64> = (0..FEATURE_DIM).map(|j| (i * j) as f64 / 1000.0).collect();
+            d.ingest(&features);
+        }
+        assert_eq!(d.feature_buffer.len(), 100);
+    }
+
+    #[test]
+    fn buffer_at_max_triggers_recluster_no_panic() {
+        let mut d = PatternDiscovery::new();
+        // Fill to max_buffer_size (2000)
+        for i in 0..2000 {
+            let features: Vec<f64> = (0..FEATURE_DIM)
+                .map(|j| ((i + j) % 100) as f64 / 100.0)
+                .collect();
+            d.ingest(&features);
+        }
+        // After recluster + FIFO eviction, buffer should be smaller
+        assert!(d.feature_buffer.len() < 2000);
+    }
+}

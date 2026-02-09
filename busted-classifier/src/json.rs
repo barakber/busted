@@ -291,4 +291,116 @@ mod tests {
         assert!(fields.has_content);
         assert_eq!(fields.model.as_deref(), Some("claude-3-opus"));
     }
+
+    // ---- Edge-case tests ----
+
+    #[test]
+    fn duplicate_keys_last_wins() {
+        // serde_json: last value wins for duplicate keys
+        let body = br#"{"model":"gpt-3","model":"gpt-4"}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    }
+
+    #[test]
+    fn nested_object_as_field_value() {
+        let body = br#"{"model":"gpt-4","messages":[{"role":"user","content":{"type":"text","text":"hello"}}]}"#;
+        let fields = analyze(body);
+        assert!(fields.complete);
+        assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+        assert!(fields.has_messages);
+    }
+
+    #[test]
+    fn empty_string_model() {
+        let body = br#"{"model":""}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.model.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn max_completion_tokens_parsed() {
+        let body = br#"{"max_completion_tokens":2048}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.max_tokens, Some(2048));
+    }
+
+    #[test]
+    fn jsonrpc_id_as_string() {
+        let body = br#"{"jsonrpc":"2.0","method":"test","id":"abc-123"}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.id.as_deref(), Some("abc-123"));
+    }
+
+    #[test]
+    fn jsonrpc_id_as_zero() {
+        let body = br#"{"jsonrpc":"2.0","method":"test","id":0}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.id.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn scientific_notation_temperature() {
+        let body = br#"{"temperature":1e-1}"#;
+        let fields = analyze(body);
+        assert!((fields.temperature.unwrap() - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stream_true() {
+        let body = br#"{"stream":true}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.stream, Some(true));
+    }
+
+    #[test]
+    fn stream_false() {
+        let body = br#"{"stream":false}"#;
+        let fields = analyze(body);
+        assert_eq!(fields.stream, Some(false));
+    }
+
+    #[test]
+    fn truncated_in_middle_of_key() {
+        let body = br#"{"model":"gpt-4","temper"#;
+        let fields = analyze(body);
+        assert!(!fields.complete);
+        assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    }
+
+    #[test]
+    fn truncated_number_value() {
+        // Truncated after number start
+        let body = br#"{"temperature":0."#;
+        let fields = analyze(body);
+        assert!(!fields.complete);
+        // scanner should attempt to parse "0." but it may fail
+    }
+
+    #[test]
+    fn top_level_keys_order() {
+        let body = br#"{"model":"gpt-4","messages":[],"temperature":0.5}"#;
+        let fields = analyze(body);
+        assert!(fields.complete);
+        assert!(fields.top_level_keys.contains(&"model".to_string()));
+        assert!(fields.top_level_keys.contains(&"messages".to_string()));
+        assert!(fields.top_level_keys.contains(&"temperature".to_string()));
+    }
+
+    #[test]
+    fn empty_json_object() {
+        let body = br#"{}"#;
+        let fields = analyze(body);
+        assert!(fields.complete);
+        assert!(fields.model.is_none());
+        assert!(!fields.has_messages);
+    }
+
+    #[test]
+    fn not_json_at_all() {
+        let body = b"this is not json at all";
+        let fields = analyze(body);
+        assert!(!fields.complete);
+        assert!(fields.model.is_none());
+    }
 }

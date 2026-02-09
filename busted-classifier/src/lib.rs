@@ -558,4 +558,146 @@ mod tests {
         assert_eq!(c.provider(), Some("OpenAI"));
         assert_eq!(c.model(), Some("gpt-4"));
     }
+
+    // ---- Edge-case tests ----
+
+    #[test]
+    fn test_raw_json_body_llm_fields() {
+        // Raw JSON without HTTP framing, with LLM fields
+        let payload =
+            br#"{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"temperature":0.7}"#;
+        let c = classify(payload, Direction::Write, None);
+        // Should detect via raw body path
+        assert!(c.is_interesting);
+    }
+
+    #[test]
+    fn test_raw_mcp_body() {
+        let payload = br#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"test"},"id":1}"#;
+        let c = classify(payload, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.content_class_str(), Some("Mcp"));
+        assert!(c.confidence >= 0.8);
+    }
+
+    #[test]
+    fn test_count_llm_indicators_zero() {
+        let jf = json::JsonFields::default();
+        assert_eq!(count_llm_indicators(&jf), 0);
+    }
+
+    #[test]
+    fn test_count_llm_indicators_all() {
+        let jf = json::JsonFields {
+            model: Some("gpt-4".into()),
+            has_messages: true,
+            has_prompt: true,
+            temperature: Some(0.7),
+            max_tokens: Some(100),
+            has_choices: true,
+            has_content: true,
+            has_completion: true,
+            ..Default::default()
+        };
+        assert_eq!(count_llm_indicators(&jf), 8);
+    }
+
+    #[test]
+    fn test_count_llm_indicators_threshold() {
+        // 1 indicator: not enough for LLM classification via raw body
+        let jf1 = json::JsonFields {
+            model: Some("gpt-4".into()),
+            ..Default::default()
+        };
+        assert_eq!(count_llm_indicators(&jf1), 1);
+
+        // 2 indicators: meets threshold
+        let jf2 = json::JsonFields {
+            model: Some("gpt-4".into()),
+            has_messages: true,
+            ..Default::default()
+        };
+        assert_eq!(count_llm_indicators(&jf2), 2);
+    }
+
+    #[test]
+    fn test_llm_api_confidence_high() {
+        let payload = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nContent-Type: application/json\r\n\r\n{\"model\":\"gpt-4\"}";
+        let c = classify(payload, Direction::Write, None);
+        assert!(c.confidence >= 0.9);
+    }
+
+    #[test]
+    fn test_mcp_confidence() {
+        let payload = b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":1}";
+        let c = classify(payload, Direction::Write, None);
+        assert_eq!(c.confidence, 0.95);
+    }
+
+    #[test]
+    fn test_generic_http_confidence() {
+        let payload = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let c = classify(payload, Direction::Write, None);
+        assert!(!c.is_interesting);
+        assert_eq!(c.confidence, 0.3);
+    }
+
+    #[test]
+    fn test_http2_not_interesting() {
+        let payload = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        let c = classify(payload, Direction::Write, None);
+        assert!(!c.is_interesting);
+        assert!(matches!(c.protocol, Protocol::Http2Binary));
+        assert_eq!(c.confidence, 0.3);
+    }
+
+    #[test]
+    fn test_empty_payload() {
+        let c = classify(b"", Direction::Write, None);
+        assert!(!c.is_interesting);
+        assert!(matches!(c.protocol, Protocol::Unknown));
+    }
+
+    #[test]
+    fn test_content_class_str_variants() {
+        // LlmApi
+        let payload = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nContent-Type: application/json\r\n\r\n{\"model\":\"gpt-4\"}";
+        let c = classify(payload, Direction::Write, None);
+        assert_eq!(c.content_class_str(), Some("LlmApi"));
+
+        // GenericHttp
+        let c2 = classify(
+            b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            Direction::Write,
+            None,
+        );
+        assert_eq!(c2.content_class_str(), Some("GenericHttp"));
+    }
+
+    #[test]
+    fn test_classification_convenience_methods() {
+        let payload = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nContent-Type: application/json\r\nUser-Agent: openai-python/1.12.0\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
+        let c = classify(payload, Direction::Write, None);
+
+        assert_eq!(c.provider(), Some("OpenAI"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("gpt-4"));
+        assert!(c.sdk_string().is_some());
+        assert!(c.signature_hash().is_some());
+        // Not MCP
+        assert!(c.mcp_method().is_none());
+        assert!(c.mcp_category_str().is_none());
+    }
+
+    #[test]
+    fn test_mcp_convenience_methods() {
+        let payload =
+            br#"{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"test"},"id":5}"#;
+        let c = classify(payload, Direction::Write, None);
+        assert_eq!(c.mcp_method(), Some("resources/read"));
+        assert!(c.mcp_category_str().is_some());
+        // Not LLM
+        assert!(c.provider().is_none());
+        assert!(c.endpoint().is_none());
+    }
 }
