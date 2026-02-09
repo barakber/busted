@@ -68,6 +68,11 @@ struct Cli {
     #[arg(short, long, default_value = "stdout")]
     output: String,
 
+    /// Directory containing OPA/Rego policy files
+    #[cfg(feature = "opa")]
+    #[arg(long)]
+    policy_dir: Option<std::path::PathBuf>,
+
     /// Prometheus metrics HTTP port
     #[cfg(feature = "prometheus")]
     #[arg(long, default_value_t = 9090)]
@@ -376,6 +381,7 @@ async fn handle_event(
     #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
     #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
     #[cfg(feature = "tls")] sni_cache: &tls::SniCache,
+    #[cfg(feature = "opa")] opa_engine: &mut Option<busted_opa::PolicyEngine>,
     #[cfg(feature = "prometheus")] llm_pids: &mut HashSet<u32>,
     #[cfg(feature = "prometheus")] unique_providers: &mut HashSet<String>,
 ) {
@@ -503,6 +509,30 @@ async fn handle_event(
 
             #[cfg(feature = "prometheus")]
             metrics::record_ml_classification(&b.class.to_string());
+        }
+    }
+
+    // OPA policy evaluation (overrides hardcoded policy if enabled)
+    #[cfg(feature = "opa")]
+    if let Some(ref mut engine) = opa_engine {
+        match engine.evaluate(&processed) {
+            Ok(decision) => {
+                processed.policy = Some(decision.action.as_str().to_string());
+                match decision.action {
+                    busted_opa::Action::Deny => {
+                        if let Ok(mut pmap) = policy_map.try_lock() {
+                            let _ = pmap.insert(event.pid, 1, 0);
+                        }
+                    }
+                    busted_opa::Action::Audit => {
+                        if let Ok(mut pmap) = policy_map.try_lock() {
+                            let _ = pmap.insert(event.pid, 2, 0);
+                        }
+                    }
+                    busted_opa::Action::Allow => {}
+                }
+            }
+            Err(e) => warn!("OPA evaluation failed: {e}"),
         }
     }
 
@@ -837,6 +867,12 @@ async fn main() -> Result<()> {
     let async_fd = AsyncFd::new(ring_buf)?;
     let enforce = cli.enforce;
 
+    // Initialize OPA policy engine (if configured)
+    #[cfg(feature = "opa")]
+    let opa_engine: Option<busted_opa::PolicyEngine> = cli.policy_dir.as_ref().map(|dir| {
+        busted_opa::PolicyEngine::new(dir).expect("Failed to initialize OPA policy engine")
+    });
+
     #[cfg(feature = "k8s")]
     let k8s_cache_clone = k8s_cache.clone();
 
@@ -844,6 +880,8 @@ async fn main() -> Result<()> {
         let mut container_cache: HashMap<u32, String> = HashMap::new();
         let mut pid_stats: HashMap<u32, PidStats> = HashMap::new();
         let mut async_fd = async_fd;
+        #[cfg(feature = "opa")]
+        let mut opa_engine = opa_engine;
         #[cfg(feature = "ml")]
         let mut ml_classifier = ml::MlClassifier::new();
         #[cfg(feature = "ml")]
@@ -918,7 +956,19 @@ async fn main() -> Result<()> {
                             tls_data.payload_len,
                         );
 
+                        #[cfg(feature = "opa")]
+                        let mut processed = events::from_tls_data_event(&tls_data, &classification);
+                        #[cfg(not(feature = "opa"))]
                         let processed = events::from_tls_data_event(&tls_data, &classification);
+                        #[cfg(feature = "opa")]
+                        if let Some(ref mut engine) = opa_engine {
+                            match engine.evaluate(&processed) {
+                                Ok(decision) => {
+                                    processed.policy = Some(decision.action.as_str().to_string());
+                                }
+                                Err(e) => warn!("OPA evaluation failed: {e}"),
+                            }
+                        }
                         let _ = tx.send(processed);
                     } else {
                         // Still undecided — classify this chunk
@@ -948,7 +998,21 @@ async fn main() -> Result<()> {
                                 chunk_num,
                             );
 
+                            #[cfg(feature = "opa")]
+                            let mut processed =
+                                events::from_tls_data_event(&tls_data, &classification);
+                            #[cfg(not(feature = "opa"))]
                             let processed = events::from_tls_data_event(&tls_data, &classification);
+                            #[cfg(feature = "opa")]
+                            if let Some(ref mut engine) = opa_engine {
+                                match engine.evaluate(&processed) {
+                                    Ok(decision) => {
+                                        processed.policy =
+                                            Some(decision.action.as_str().to_string());
+                                    }
+                                    Err(e) => warn!("OPA evaluation failed: {e}"),
+                                }
+                            }
                             let _ = tx.send(processed);
                         } else if tls_conn_tracker
                             .should_mark_boring(tls_data.pid, tls_data.ssl_ptr)
@@ -1021,6 +1085,8 @@ async fn main() -> Result<()> {
                         &mut ml_classifier,
                         #[cfg(feature = "tls")]
                         &sni_cache,
+                        #[cfg(feature = "opa")]
+                        &mut opa_engine,
                         #[cfg(feature = "prometheus")]
                         &mut llm_pids,
                         #[cfg(feature = "prometheus")]

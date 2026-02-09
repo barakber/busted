@@ -6,6 +6,7 @@ members = [
     "busted-agent",
     "busted-classifier",
     "busted-ml",
+    "busted-opa",
     "busted-ui",
     "xtask",
 ]
@@ -15,6 +16,7 @@ default-members = [
     "busted-agent",
     "busted-classifier",
     "busted-ml",
+    "busted-opa",
     "busted-ui",
     "xtask",
 ]

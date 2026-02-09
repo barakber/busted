@@ -32,12 +32,14 @@ reqwest = { version = "0.12", features = ["json"] }
 kube = { version = "0.98", features = ["runtime", "derive"], optional = true }
 k8s-openapi = { version = "0.24", features = ["latest"], optional = true }
 busted-ml = { path = "../busted-ml", optional = true }
+busted-opa = { path = "../busted-opa", optional = true }
 metrics = { version = "0.24", optional = true }
 metrics-exporter-prometheus = { version = "0.16", optional = true }
 
 [features]
 k8s = ["dep:kube", "dep:k8s-openapi"]
 ml = ["dep:busted-ml"]
+opa = ["dep:busted-opa"]
 tls = []
 prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 
