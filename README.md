@@ -4,6 +4,22 @@
 
 Busted is a high-performance, kernel-native observability and policy enforcement system for tracking, classifying, and controlling LLM/AI communications. Built entirely in Rust with eBPF, it provides real-time visibility into AI agent behavior without requiring application changes.
 
+## Demo
+
+Real-time policy enforcement blocking an AI agent from sending specific content to Anthropic's API:
+
+<img src="busted.gif" alt="Busted policy enforcement demo" width="600">
+
+```bash
+sudo busted monitor --enforce --rule '
+  package busted
+  default decision = "allow"
+  decision = "deny" {
+      input.llm_provider == "Anthropic"
+      contains(input.tls_payload, "berko")
+  }'
+```
+
 ## Key Features
 
 - **Kernel-Native Monitoring**: eBPF kprobes/uprobes with minimal overhead via RingBuf transport
