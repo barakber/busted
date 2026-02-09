@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SOCKET_PATH"],"fn":["main"],"mod":["app","demo","views"]};

@@ -1,0 +1,2 @@
+createSrcSidebar('[["busted",["",[],["events.rs","main.rs","server.rs","siem.rs"]]],["busted_classifier",["",[],["fingerprint.rs","http.rs","json.rs","lib.rs","llm.rs","mcp.rs","pii.rs"]]],["busted_ml",["",[],["classifier.rs","discovery.rs","features.rs","lib.rs","symbol.rs","window.rs"]]],["busted_types",["",[],["lib.rs"]]],["busted_ui",["",[["views",[],["events.rs","mod.rs","policy.rs","processes.rs","providers.rs"]]],["app.rs","demo.rs","main.rs"]]],["xtask",["",[],["main.rs"]]]]');
+//{"start":19,"fragment_lengths":[64,105,102,36,130,30]}

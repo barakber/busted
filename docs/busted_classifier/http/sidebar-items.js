@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_http2_binary","looks_like_http_request","looks_like_http_response","parse_request","parse_response"],"struct":["HttpRequestInfo","HttpResponseInfo"]};

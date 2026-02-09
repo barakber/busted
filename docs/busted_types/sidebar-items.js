@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["CGROUP_PATH_LEN","CONTAINER_ID_LEN","SNI_MAX_LEN","TASK_COMM_LEN","TLS_PAYLOAD_MAX"],"enum":["AddressFamily","EventType","LlmProvider","PolicyDecision"],"mod":["processed","userspace"],"struct":["AgentIdentity","NetworkEvent","TlsConnKey","TlsDataEvent","TlsHandshakeEvent"],"union":["IpAddress"]};

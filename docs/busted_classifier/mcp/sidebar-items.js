@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["McpCategory","McpMsgType"],"fn":["classify"],"struct":["McpInfo"]};
