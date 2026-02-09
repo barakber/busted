@@ -37,7 +37,7 @@ clustering. This catches novel traffic patterns that the supervised model hasn�
 seen — a new LLM provider, an unusual SDK, or a tool using AI in an unexpected
 way. Novel clusters surface as <code>is_novel: true</code> in the result.</p>
 <h2 id="architecture"><a class="doc-anchor" href="#architecture">§</a>Architecture</h2>
-<p>The classifier operates on a per-PID sliding window of <a href="../busted_types/struct.NetworkEvent.html" title="struct busted_types::NetworkEvent"><code>busted_types::NetworkEvent</code></a>s:</p>
+<p>The classifier operates on a per-PID sliding window of [<code>busted_types::NetworkEvent</code>]s:</p>
 <ol>
 <li><strong>Symbolization</strong> — Each event is mapped to a compact symbol encoding event type,
 byte-size bucket, and port class (180 possible symbols).</li>
@@ -51,7 +51,7 @@ not captured by the supervised model.</li>
 </ol>
 <h2 id="integration-with-busted"><a class="doc-anchor" href="#integration-with-busted">§</a>Integration with Busted</h2>
 <p>In the Busted agent, <code>busted-ml</code> sits behind the <code>ml</code> feature flag. The agent feeds
-every <a href="../busted_types/struct.NetworkEvent.html" title="struct busted_types::NetworkEvent"><code>NetworkEvent</code></a> to <a href="struct.MlClassifier.html#method.process_event" title="method busted_ml::MlClassifier::process_event"><code>MlClassifier::process_event</code></a>,
+every [<code>NetworkEvent</code>] to <a href="struct.MlClassifier.html#method.process_event" title="method busted_ml::MlClassifier::process_event"><code>MlClassifier::process_event</code></a>,
 along with any IP-based provider label it already has. The returned
 <a href="struct.BehaviorIdentity.html" title="struct busted_ml::BehaviorIdentity"><code>BehaviorIdentity</code></a> is folded into the
 <code>ProcessedEvent</code> as <code>ml_confidence</code>,
