@@ -1,0 +1,43 @@
+{
+  "name": "Busted eBPF Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": [
+    "--privileged",
+    "--pid=host"
+  ],
+  "mounts": [
+    "source=/lib/modules,target=/lib/modules,type=bind,readonly",
+    "source=/usr/src,target=/usr/src,type=bind,readonly",
+    "source=/sys/kernel/debug,target=/sys/kernel/debug,type=bind",
+    "source=/sys/fs/bpf,target=/sys/fs/bpf,type=bind"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.check.extraArgs": [
+          "--workspace",
+          "--exclude",
+          "busted-ebpf"
+        ],
+        "rust-analyzer.cargo.extraEnv": {
+          "RUSTFLAGS": ""
+        },
+        "rust-analyzer.linkedProjects": [
+          "Cargo.toml"
+        ]
+      }
+    }
+  },
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "remoteUser": "vscode"
+}
