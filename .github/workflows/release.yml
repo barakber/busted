@@ -330,4 +330,4 @@ jobs:
           git add docs/repos/
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Update package repos for v${{ needs.verify.outputs.version }}"
-          git push origin main
+          git push origin HEAD:refs/heads/main
