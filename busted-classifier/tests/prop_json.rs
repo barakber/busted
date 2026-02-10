@@ -328,3 +328,136 @@ fn binary_garbage() {
     let fields = json::analyze(&[0xFF, 0xFE, 0x00, 0x01, 0x80, 0x90]);
     assert!(!fields.complete);
 }
+
+// ---------------------------------------------------------------------------
+// Unit: UTF-8 BOM prefix before JSON
+// ---------------------------------------------------------------------------
+
+#[test]
+fn utf8_bom_prefix() {
+    // BOM (EF BB BF) followed by valid JSON
+    let mut input = vec![0xEF, 0xBB, 0xBF];
+    input.extend_from_slice(br#"{"model":"gpt-4","messages":[]}"#);
+    let fields = json::analyze(&input);
+    // serde_json does NOT accept BOM, so it falls back to the byte scanner
+    assert!(!fields.complete);
+    // But the scanner should still find the model key
+    assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    assert!(fields.has_messages);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: top-level JSON array with objects inside
+// ---------------------------------------------------------------------------
+
+#[test]
+fn top_level_non_empty_array() {
+    let fields = json::analyze(br#"[{"model":"gpt-4"},{"model":"claude"}]"#);
+    // Array is valid JSON, but no top-level "model" key on the array itself
+    assert!(fields.complete);
+    assert!(fields.model.is_none());
+    assert!(fields.top_level_keys.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Unit: null value for model key
+// ---------------------------------------------------------------------------
+
+#[test]
+fn null_model_value() {
+    let fields = json::analyze(br#"{"model":null,"messages":[]}"#);
+    assert!(fields.complete);
+    // model is Value::Null, not Value::String → model stays None
+    assert!(fields.model.is_none());
+    assert!(fields.has_messages);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: repeated keys — serde_json picks last
+// ---------------------------------------------------------------------------
+
+#[test]
+fn repeated_keys_last_wins() {
+    let fields =
+        json::analyze(br#"{"model":"gpt-3","temperature":0.5,"model":"gpt-4","temperature":0.9}"#);
+    assert!(fields.complete);
+    assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    assert!((fields.temperature.unwrap() - 0.9).abs() < f64::EPSILON);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: JSON with trailing garbage → falls to scanner
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_with_trailing_garbage() {
+    let fields = json::analyze(br#"{"model":"gpt-4","messages":[]}GARBAGE_HERE"#);
+    // serde_json::from_slice rejects trailing content → falls to scanner
+    assert!(!fields.complete);
+    // Scanner should still extract model and messages
+    assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    assert!(fields.has_messages);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: whitespace-padded JSON
+// ---------------------------------------------------------------------------
+
+#[test]
+fn whitespace_padded_json() {
+    let fields = json::analyze(b"  \n\t {\"model\":\"gpt-4\",\"messages\":[]}  \n");
+    // serde_json accepts leading whitespace but trailing whitespace after closing
+    // brace may cause from_slice to fail → falls to scanner
+    // Either way, model should be extracted
+    assert_eq!(fields.model.as_deref(), Some("gpt-4"));
+    assert!(fields.has_messages);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: very large number in max_tokens
+// ---------------------------------------------------------------------------
+
+#[test]
+fn very_large_max_tokens() {
+    let fields = json::analyze(br#"{"max_tokens":999999999999}"#);
+    assert!(fields.complete);
+    assert_eq!(fields.max_tokens, Some(999_999_999_999));
+}
+
+// ---------------------------------------------------------------------------
+// Unit: negative temperature
+// ---------------------------------------------------------------------------
+
+#[test]
+fn negative_temperature() {
+    let fields = json::analyze(br#"{"temperature":-0.5}"#);
+    assert!(fields.complete);
+    assert!((fields.temperature.unwrap() - (-0.5)).abs() < f64::EPSILON);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: model value is a number (not string)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn model_value_is_number() {
+    let fields = json::analyze(br#"{"model":42,"messages":[]}"#);
+    assert!(fields.complete);
+    // extract_from_value checks for Value::String, so a number is ignored
+    assert!(fields.model.is_none());
+    assert!(fields.has_messages);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: JSON-RPC id as null
+// ---------------------------------------------------------------------------
+
+#[test]
+fn jsonrpc_id_null() {
+    let fields = json::analyze(br#"{"jsonrpc":"2.0","method":"test","id":null}"#);
+    assert!(fields.complete);
+    assert_eq!(fields.jsonrpc.as_deref(), Some("2.0"));
+    assert_eq!(fields.method.as_deref(), Some("test"));
+    // id:null is not Number or String → id stays None
+    assert!(fields.id.is_none());
+}

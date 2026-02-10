@@ -356,3 +356,174 @@ fn duplicate_headers_handled() {
     // HashMap semantics — one of them wins, but we don't crash
     assert!(req.headers.contains_key("host"));
 }
+
+// ---------------------------------------------------------------------------
+// Unit: null bytes in headers (no panic)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn null_bytes_in_header_value_no_panic() {
+    // Null byte in the middle of a header value — nom should stop or handle gracefully
+    let raw = b"GET / HTTP/1.1\r\nHost: exam\x00ple.com\r\n\r\n";
+    let _ = http::parse_request(raw);
+    // Just verify no panic
+}
+
+// ---------------------------------------------------------------------------
+// Unit: spaces before header colon
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spaces_before_header_colon_no_parse() {
+    // RFC 7230 says no whitespace before colon; nom's is_token_char doesn't include space
+    let raw = b"GET / HTTP/1.1\r\nHost : example.com\r\n\r\n";
+    let req = http::parse_request(raw);
+    // Should parse request line but the header with space before colon won't parse
+    // (space is not a token char), so body_offset may be None
+    if let Some(r) = req {
+        // Header parsing stopped — Host not captured
+        assert!(!r.headers.contains_key("host "));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit: lowercase/mixed-case HTTP method → not detected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lowercase_method_not_detected() {
+    assert!(!http::looks_like_http_request(
+        b"post /v1/chat HTTP/1.1\r\n"
+    ));
+    assert!(!http::looks_like_http_request(b"Post / HTTP/1.1\r\n"));
+    assert!(!http::looks_like_http_request(b"get / HTTP/1.1\r\n"));
+}
+
+// ---------------------------------------------------------------------------
+// Unit: very long path (10K chars)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn very_long_path_no_panic() {
+    let mut raw = b"GET /".to_vec();
+    raw.extend(std::iter::repeat(b'a').take(10_000));
+    raw.extend(b" HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    let req = http::parse_request(&raw);
+    assert!(req.is_some());
+    let req = req.unwrap();
+    assert_eq!(req.path.len(), 10_001); // "/" + 10000 'a's
+}
+
+// ---------------------------------------------------------------------------
+// Unit: empty host header value
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_host_header_value() {
+    // nom take_while1 requires at least 1 char for value
+    let raw = b"GET / HTTP/1.1\r\nHost: \r\n\r\n";
+    let req = http::parse_request(raw);
+    // Should parse request line; header parse stops at empty value
+    assert!(req.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Unit: tab as whitespace after header colon
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tab_after_header_colon() {
+    let raw = b"GET / HTTP/1.1\r\nHost:\texample.com\r\n\r\n";
+    let req = http::parse_request(raw);
+    // nom's opt(space1) should handle tab (space1 matches both spaces and tabs)
+    if let Some(r) = req {
+        if let Some(host) = r.headers.get("host") {
+            assert!(host.contains("example.com"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit: response with no reason phrase (HTTP/1.1 200\r\n)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn response_status_only_no_reason() {
+    // Some HTTP implementations send just the status code
+    // take_while1 for reason requires at least 1 char, but there's a fallback
+    let raw = b"HTTP/1.1 200\r\nContent-Type: text/html\r\n\r\n";
+    let resp = http::parse_response(raw);
+    // The parser may or may not handle this depending on whether reason is optional
+    // Just verify no panic
+    if let Some(r) = resp {
+        assert_eq!(r.status_code, 200);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit: response with space-only reason
+// ---------------------------------------------------------------------------
+
+#[test]
+fn response_with_space_reason() {
+    let raw = b"HTTP/1.1 200 \r\nContent-Type: text/html\r\n\r\n";
+    let resp = http::parse_response(raw);
+    // Just verify no panic — space-only reason may or may not parse
+    if let Some(r) = resp {
+        assert_eq!(r.status_code, 200);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit: multiple authorization headers masked
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multiple_auth_headers_last_wins_masked() {
+    let raw = b"GET / HTTP/1.1\r\nAuthorization: Bearer first-key-123456\r\nAuthorization: Bearer second-key-789012\r\n\r\n";
+    let req = http::parse_request(raw).unwrap();
+    let auth = req.headers.get("authorization").unwrap();
+    // Should be masked regardless of which one wins
+    assert!(auth.contains("..."), "auth should be masked: {auth}");
+}
+
+// ---------------------------------------------------------------------------
+// Unit: openai-organization header captured
+// ---------------------------------------------------------------------------
+
+#[test]
+fn openai_organization_header_captured() {
+    let raw = b"POST /v1/chat HTTP/1.1\r\nHost: api.openai.com\r\nOpenAI-Organization: org-abc123\r\n\r\n";
+    let req = http::parse_request(raw).unwrap();
+    assert_eq!(
+        req.headers.get("openai-organization").map(|s| s.as_str()),
+        Some("org-abc123")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unit: accept header captured
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accept_header_captured() {
+    let raw = b"GET / HTTP/1.1\r\nHost: example.com\r\nAccept: application/json\r\n\r\n";
+    let req = http::parse_request(raw).unwrap();
+    assert_eq!(
+        req.headers.get("accept").map(|s| s.as_str()),
+        Some("application/json")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Unit: header value with embedded CRLF (folded header — not supported)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn header_with_embedded_crlf_no_panic() {
+    // Obsolete line folding: header value continues on next line with leading whitespace
+    // Our parser doesn't support this but shouldn't panic
+    let raw = b"GET / HTTP/1.1\r\nHost: example\r\n .com\r\n\r\n";
+    let _ = http::parse_request(raw);
+    // Just verify no panic
+}

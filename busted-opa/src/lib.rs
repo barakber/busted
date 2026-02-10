@@ -1290,4 +1290,204 @@ decision = "deny" { regex.match("^10\\.0\\.", input.src_ip) }
         event.src_ip = "192.168.1.1".into();
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
+
+    // ================================================================
+    // from_rego edge cases
+    // ================================================================
+
+    #[test]
+    fn from_rego_empty_string_errors() {
+        let result = PolicyEngine::from_rego("");
+        assert!(result.is_err(), "empty string should fail to parse as Rego");
+    }
+
+    #[test]
+    fn from_rego_with_import() {
+        // Rego with an import of non-existent data — regorus allows this
+        let result = PolicyEngine::from_rego(
+            r#"
+package busted
+import data.foo
+default decision = "allow"
+"#,
+        );
+        assert!(
+            result.is_ok(),
+            "import of non-existent data should not error at load time"
+        );
+        let mut engine = result.unwrap();
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert_eq!(d.action, Action::Allow);
+    }
+
+    #[test]
+    fn from_rego_referencing_data() {
+        // from_rego with a data.foo reference — data is empty, rule body fails → default
+        let mut engine = PolicyEngine::from_rego(
+            r#"
+package busted
+default decision = "allow"
+decision = "deny" {
+    input.provider == data.blocked[_]
+}
+"#,
+        )
+        .unwrap();
+        let d = engine.evaluate(&sample_event()).unwrap();
+        // data.blocked doesn't exist → rule body fails → default allow
+        assert_eq!(d.action, Action::Allow);
+    }
+
+    // ================================================================
+    // Reload edge cases
+    // ================================================================
+
+    #[test]
+    fn reload_from_empty_dir_after_policies() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(
+            dir.path(),
+            "test.rego",
+            r#"package busted
+default decision = "deny"
+"#,
+        );
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Deny
+        );
+
+        // Remove all .rego files
+        std::fs::remove_file(dir.path().join("test.rego")).unwrap();
+        engine.reload().unwrap();
+
+        // Now should default to allow (no policies)
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert_eq!(d.action, Action::Allow);
+        assert!(d.reasons.is_empty());
+    }
+
+    #[test]
+    fn reload_adding_data_json_mid_session() {
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(
+            dir.path(),
+            "test.rego",
+            r#"
+package busted
+default decision = "deny"
+decision = "allow" {
+    input.provider == data.ok[_]
+}
+"#,
+        );
+        // Start without data.json → data.ok doesn't exist → deny all
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Deny
+        );
+
+        // Add data.json with OpenAI in the list
+        std::fs::write(dir.path().join("data.json"), r#"{"ok": ["OpenAI"]}"#).unwrap();
+        engine.reload().unwrap();
+
+        // Now OpenAI should be allowed
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Allow
+        );
+    }
+
+    // ================================================================
+    // Reason parsing edge cases
+    // ================================================================
+
+    #[test]
+    fn non_string_reasons_ignored() {
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+default decision = "audit"
+reasons[r] {
+    r := 42
+}
+reasons[r] {
+    r := "valid reason"
+}
+"#,
+        );
+        let d = engine.evaluate(&sample_event()).unwrap();
+        // Numeric reason (42) should be silently ignored; only string reason kept
+        assert_eq!(d.reasons.len(), 1);
+        assert_eq!(d.reasons[0], "valid reason");
+    }
+
+    #[test]
+    fn object_decision_defaults_to_allow() {
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+decision = {"action": "deny"}
+"#,
+        );
+        let d = engine.evaluate(&sample_event()).unwrap();
+        // Object value is not a string → defaults to Allow
+        assert_eq!(d.action, Action::Allow);
+    }
+
+    #[test]
+    fn parse_reasons_handles_set_from_rego() {
+        // Test with a Rego rule that produces a Set value (standard `reasons[r]` syntax)
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+default decision = "audit"
+reasons[r] {
+    r := "set_reason_alpha"
+}
+reasons[r] {
+    input.provider != null
+    r := "set_reason_beta"
+}
+"#,
+        );
+        let d = engine.evaluate(&sample_event()).unwrap();
+        assert!(
+            d.reasons.contains(&"set_reason_alpha".to_string()),
+            "should contain set_reason_alpha: {:?}",
+            d.reasons
+        );
+        assert!(
+            d.reasons.contains(&"set_reason_beta".to_string()),
+            "should contain set_reason_beta: {:?}",
+            d.reasons
+        );
+        // Multiple distinct reason rules should produce multiple reasons
+        assert!(
+            d.reasons.len() >= 2,
+            "expected at least 2 reasons, got {:?}",
+            d.reasons
+        );
+
+        // Verify that when no reasons rules match, we get empty vec
+        let mut engine2 = PolicyEngine::from_rego(
+            r#"
+package busted
+default decision = "audit"
+reasons[r] {
+    input.provider == "NEVER_MATCHES"
+    r := "should not appear"
+}
+"#,
+        )
+        .unwrap();
+        let d2 = engine2.evaluate(&sample_event()).unwrap();
+        // reasons set is empty → should produce empty reasons vec
+        assert!(
+            d2.reasons.is_empty(),
+            "non-matching reasons should be empty"
+        );
+    }
 }

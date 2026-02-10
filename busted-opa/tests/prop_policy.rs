@@ -478,3 +478,232 @@ decision = "audit" {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Property: evaluation order does not affect per-event results
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn commutativity_evaluation_order(
+        event_a in processed_event_strategy(),
+        event_b in processed_event_strategy(),
+    ) {
+        let rego = r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+decision = "deny" { input.pii_detected == true; input.provider != null }
+reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+"#;
+        // Evaluate A then B
+        let dir1 = tempfile::tempdir().unwrap();
+        write_rego(dir1.path(), "p.rego", rego);
+        let mut engine1 = PolicyEngine::new(dir1.path()).unwrap();
+        let da_first = engine1.evaluate(&event_a).unwrap();
+        let db_second = engine1.evaluate(&event_b).unwrap();
+
+        // Evaluate B then A
+        let dir2 = tempfile::tempdir().unwrap();
+        write_rego(dir2.path(), "p.rego", rego);
+        let mut engine2 = PolicyEngine::new(dir2.path()).unwrap();
+        let db_first = engine2.evaluate(&event_b).unwrap();
+        let da_second = engine2.evaluate(&event_a).unwrap();
+
+        // Per-event results should be the same regardless of order
+        prop_assert_eq!(da_first.action, da_second.action,
+            "event A action differs by evaluation order");
+        prop_assert_eq!(db_first.action, db_second.action,
+            "event B action differs by evaluation order");
+
+        let mut ra1 = da_first.reasons.clone();
+        let mut ra2 = da_second.reasons.clone();
+        ra1.sort();
+        ra2.sort();
+        prop_assert_eq!(ra1, ra2, "event A reasons differ by evaluation order");
+
+        let mut rb1 = db_first.reasons.clone();
+        let mut rb2 = db_second.reasons.clone();
+        rb1.sort();
+        rb2.sort();
+        prop_assert_eq!(rb1, rb2, "event B reasons differ by evaluation order");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: reload with unchanged directory yields same result
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    #[test]
+    fn reload_stability_unchanged_dir(event in processed_event_strategy()) {
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(dir.path(), "p.rego", r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+decision = "deny" { input.pii_detected == true; input.provider != null }
+reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+"#);
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        let d1 = engine.evaluate(&event).unwrap();
+        engine.reload().unwrap();
+        let d2 = engine.evaluate(&event).unwrap();
+
+        prop_assert_eq!(d1.action, d2.action, "action changed after reload");
+        let mut r1 = d1.reasons.clone();
+        let mut r2 = d2.reasons.clone();
+        r1.sort();
+        r2.sort();
+        prop_assert_eq!(r1, r2, "reasons changed after reload");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: from_rego and file-based engine produce same result
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn from_rego_equivalence(event in processed_event_strategy()) {
+        let source = r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+decision = "deny" { input.pii_detected == true; input.provider != null }
+reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+"#;
+        // File-based engine
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(dir.path(), "p.rego", source);
+        let mut file_engine = PolicyEngine::new(dir.path()).unwrap();
+        let d_file = file_engine.evaluate(&event).unwrap();
+
+        // Inline from_rego engine
+        let mut inline_engine = PolicyEngine::from_rego(source).unwrap();
+        let d_inline = inline_engine.evaluate(&event).unwrap();
+
+        prop_assert_eq!(d_file.action, d_inline.action,
+            "file vs from_rego action mismatch");
+        let mut rf = d_file.reasons.clone();
+        let mut ri = d_inline.reasons.clone();
+        rf.sort();
+        ri.sort();
+        prop_assert_eq!(rf, ri, "file vs from_rego reasons mismatch");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: special JSON characters in fields never cause errors
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    #[test]
+    fn special_json_chars_in_fields(
+        process_name in r#"[a-z]{1,5}["\\n]{1,3}[a-z]{1,5}"#,
+        provider in r#"[A-Z]{1,5}["\\n]{1,3}[A-Z]{1,5}"#,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(dir.path(), "p.rego", r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+reasons[r] { input.provider != null; r := "has provider" }
+"#);
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        let event = ProcessedEvent {
+            event_type: "TCP_CONNECT".into(),
+            timestamp: "00:00:00.000".into(),
+            pid: 1, uid: 0,
+            process_name,
+            src_ip: "0.0.0.0".into(), src_port: 0,
+            dst_ip: "0.0.0.0".into(), dst_port: 443,
+            bytes: 0,
+            provider: Some(provider),
+            policy: None,
+            container_id: String::new(),
+            cgroup_id: 0,
+            request_rate: None, session_bytes: None,
+            pod_name: None, pod_namespace: None, service_account: None,
+            ml_confidence: None, ml_provider: None, behavior_class: None, cluster_id: None,
+            sni: None, tls_protocol: None, tls_details: None, tls_payload: None,
+            content_class: None, llm_provider: None, llm_endpoint: None, llm_model: None,
+            mcp_method: None, mcp_category: None, agent_sdk: None, agent_fingerprint: None,
+            classifier_confidence: None, pii_detected: None,
+            llm_user_message: None, llm_system_prompt: None,
+            llm_messages_json: None, llm_stream: None,
+        };
+        let result = engine.evaluate(&event);
+        prop_assert!(result.is_ok(), "evaluate errored on special chars: {:?}", result.err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: deny-only policy (no audit) produces Deny for matching events
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn deny_always_overrides_audit(event in processed_event_strategy()) {
+        let dir = tempfile::tempdir().unwrap();
+        // Policy with ONLY deny rule, no audit rule at all
+        write_rego(dir.path(), "p.rego", r#"
+package busted
+default decision = "allow"
+decision = "deny" {
+    input.provider != null
+}
+"#);
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        let d = engine.evaluate(&event).unwrap();
+        if event.provider.is_some() {
+            prop_assert_eq!(d.action, Action::Deny,
+                "event with provider should be denied");
+        } else {
+            prop_assert_eq!(d.action, Action::Allow,
+                "event without provider should be allowed");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property: removing all .rego files and reloading allows everything
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn empty_dir_after_reload(event in processed_event_strategy()) {
+        let dir = tempfile::tempdir().unwrap();
+        write_rego(dir.path(), "p.rego", r#"
+package busted
+default decision = "deny"
+"#);
+        let mut engine = PolicyEngine::new(dir.path()).unwrap();
+        // Confirm deny is active
+        let d1 = engine.evaluate(&event).unwrap();
+        prop_assert_eq!(d1.action, Action::Deny);
+
+        // Remove all .rego files
+        std::fs::remove_file(dir.path().join("p.rego")).unwrap();
+
+        // Reload from now-empty directory
+        engine.reload().unwrap();
+        let d2 = engine.evaluate(&event).unwrap();
+        prop_assert_eq!(d2.action, Action::Allow,
+            "empty dir after reload should allow all");
+        prop_assert!(d2.reasons.is_empty(),
+            "empty dir after reload should have no reasons");
+    }
+}

@@ -328,3 +328,134 @@ fn default_policy_reload_works() {
     let d2 = engine.evaluate(&bare_event()).unwrap();
     assert_eq!(d1.action, d2.action);
 }
+
+// =====================================================================
+// content_class "Mcp" behavior with default.rego
+// =====================================================================
+
+#[test]
+fn default_audits_content_class_mcp() {
+    let mut engine = default_engine();
+    let mut event = bare_event();
+    event.content_class = Some("Mcp".into());
+    let d = engine.evaluate(&event).unwrap();
+    // "Mcp" is NOT "LlmApi", so _is_llm_traffic is not triggered by content_class alone.
+    // Without provider or llm_provider, this should be Allow.
+    assert_eq!(d.action, Action::Allow);
+}
+
+// =====================================================================
+// content_class "LlmStream" behavior with default.rego
+// =====================================================================
+
+#[test]
+fn default_audits_content_class_llm_stream() {
+    let mut engine = default_engine();
+    let mut event = bare_event();
+    event.content_class = Some("LlmStream".into());
+    let d = engine.evaluate(&event).unwrap();
+    // "LlmStream" is NOT "LlmApi", so _is_llm_traffic is not triggered by content_class alone.
+    // Without provider or llm_provider, this should be Allow.
+    assert_eq!(d.action, Action::Allow);
+}
+
+// =====================================================================
+// All fields populated — no crash
+// =====================================================================
+
+#[test]
+fn default_all_fields_populated_no_crash() {
+    let mut engine = default_engine();
+    let event = ProcessedEvent {
+        event_type: "TLS_DATA_WRITE".into(),
+        timestamp: "23:59:59.999".into(),
+        pid: 99999,
+        uid: 65534,
+        process_name: "full-test-binary".into(),
+        src_ip: "192.168.100.200".into(),
+        src_port: 60000,
+        dst_ip: "203.0.113.50".into(),
+        dst_port: 8443,
+        bytes: 999_999,
+        provider: Some("Anthropic".into()),
+        policy: Some("custom-policy-v2".into()),
+        container_id: "abc123def456".into(),
+        cgroup_id: 12345678,
+        request_rate: Some(42.5),
+        session_bytes: Some(1_000_000),
+        pod_name: Some("ai-gateway-pod-xyz".into()),
+        pod_namespace: Some("ml-production".into()),
+        service_account: Some("ai-service-account".into()),
+        ml_confidence: Some(0.99),
+        ml_provider: Some("Anthropic".into()),
+        behavior_class: Some("llm_api_call".into()),
+        cluster_id: Some(7),
+        sni: Some("api.anthropic.com".into()),
+        tls_protocol: Some("TLSv1.3".into()),
+        tls_details: Some("ECDHE-RSA-AES256-GCM-SHA384".into()),
+        tls_payload: Some("POST /v1/messages HTTP/1.1".into()),
+        content_class: Some("LlmApi".into()),
+        llm_provider: Some("Anthropic".into()),
+        llm_endpoint: Some("/v1/messages".into()),
+        llm_model: Some("claude-3-opus".into()),
+        mcp_method: Some("tools/call".into()),
+        mcp_category: Some("tool_execution".into()),
+        agent_sdk: Some("anthropic-python/0.25.0".into()),
+        agent_fingerprint: Some(0xabc123),
+        classifier_confidence: Some(0.98),
+        pii_detected: Some(false),
+        llm_user_message: Some("Hello world".into()),
+        llm_system_prompt: Some("You are a helpful assistant".into()),
+        llm_messages_json: Some(r#"[{"role":"user","content":"hi"}]"#.into()),
+        llm_stream: Some(false),
+    };
+    let d = engine.evaluate(&event).unwrap();
+    // With provider set and pii_detected=false, should be Audit
+    assert_eq!(d.action, Action::Audit);
+    assert!(!d.reasons.is_empty());
+}
+
+// =====================================================================
+// Empty string provider vs None
+// =====================================================================
+
+#[test]
+fn default_empty_string_provider() {
+    let mut engine = default_engine();
+
+    // provider = Some("") — serde serializes as `"provider": ""`
+    // In Rego, "" != null, so _is_llm_traffic fires via input.provider != null
+    let mut event_empty = bare_event();
+    event_empty.provider = Some(String::new());
+    let d_empty = engine.evaluate(&event_empty).unwrap();
+
+    // provider = None — serde serializes as `"provider": null`
+    let d_none = engine.evaluate(&bare_event()).unwrap();
+
+    // None should be Allow; empty string triggers _is_llm_traffic (provider != null)
+    assert_eq!(d_none.action, Action::Allow);
+    assert_eq!(
+        d_empty.action,
+        Action::Audit,
+        "empty string provider should still be considered non-null by Rego"
+    );
+}
+
+// =====================================================================
+// u64::MAX bytes — no crash
+// =====================================================================
+
+#[test]
+fn default_bytes_u64_max_no_crash() {
+    let mut engine = default_engine();
+    let mut event = bare_event();
+    event.bytes = u64::MAX;
+    let d = engine.evaluate(&event).unwrap();
+    // No provider, so should still be Allow regardless of byte count
+    assert_eq!(d.action, Action::Allow);
+
+    // Also test with provider to ensure audit path handles large bytes
+    event.provider = Some("OpenAI".into());
+    let d2 = engine.evaluate(&event).unwrap();
+    assert_eq!(d2.action, Action::Audit);
+}

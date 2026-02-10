@@ -199,3 +199,121 @@ fn any_returns_true_when_api_key_set() {
     };
     assert!(flags.any());
 }
+
+// ---------------------------------------------------------------------------
+// Additional PII edge-case tests (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn international_phone_not_matched() {
+    // UK phone format should NOT match the US-only regex
+    let flags = pii::scan(b"Call +44 20 7946 0958");
+    if cfg!(feature = "pii") {
+        // The US phone regex requires 3+3+4 digit pattern; UK numbers differ
+        // +44 20 7946 0958 doesn't match \(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}
+        assert!(!flags.has_phone, "UK phone should not match US phone regex");
+    }
+}
+
+#[test]
+fn valid_luhn_credit_card_detected() {
+    // 4532015112830366 is a valid Luhn Visa card
+    let flags = pii::scan(b"Card: 4532015112830366");
+    if cfg!(feature = "pii") {
+        assert!(flags.has_credit_card, "valid Visa card should be detected");
+    }
+}
+
+#[test]
+fn api_key_prefix_variations() {
+    if cfg!(feature = "pii") {
+        // api_key= variant
+        let flags1 = pii::scan(b"api_key=abcdefghijklmnopqrstuvwxyz1234");
+        assert!(flags1.has_api_key, "api_key= prefix should match");
+
+        // api-key: variant
+        let flags2 = pii::scan(b"api-key: abcdefghijklmnopqrstuvwxyz1234");
+        assert!(flags2.has_api_key, "api-key: prefix should match");
+
+        // api_key: variant
+        let flags3 = pii::scan(b"api_key: abcdefghijklmnopqrstuvwxyz1234");
+        assert!(flags3.has_api_key, "api_key: prefix should match");
+    }
+}
+
+#[test]
+fn pii_in_url_encoded_content_not_matched() {
+    // %40 is URL-encoded '@' — email regex expects literal '@'
+    let flags = pii::scan(b"user%40example.com");
+    if cfg!(feature = "pii") {
+        assert!(
+            !flags.has_email,
+            "URL-encoded @ should not match email regex"
+        );
+    }
+}
+
+#[test]
+fn sk_uppercase_not_matched() {
+    // The regex has lowercase `sk-`, uppercase `SK-` should NOT match
+    let flags = pii::scan(b"Token: SK-1234567890abcdef1234567890abcdef");
+    if cfg!(feature = "pii") {
+        assert!(
+            !flags.has_api_key,
+            "uppercase SK- should not match lowercase sk- regex"
+        );
+    }
+}
+
+#[test]
+fn email_in_json_string_value() {
+    // Email embedded in a JSON payload
+    let flags = pii::scan(br#"{"email":"user@example.com","name":"Test"}"#);
+    if cfg!(feature = "pii") {
+        assert!(flags.has_email, "email in JSON value should be detected");
+    } else {
+        assert!(!flags.any());
+    }
+}
+
+#[test]
+fn ssn_without_dashes_not_matched() {
+    // SSN regex requires dashes: \b\d{3}-\d{2}-\d{4}\b
+    let flags = pii::scan(b"SSN: 123456789");
+    if cfg!(feature = "pii") {
+        assert!(!flags.has_ssn, "SSN without dashes should not match");
+    }
+}
+
+#[test]
+fn credit_card_without_separators() {
+    // Regex allows optional separators: [- ]? — no separators should still match
+    let flags = pii::scan(b"Card: 4111111111111111");
+    if cfg!(feature = "pii") {
+        assert!(
+            flags.has_credit_card,
+            "credit card without separators should match"
+        );
+    }
+}
+
+#[test]
+fn phone_with_dot_separators() {
+    // Phone regex accepts dots: [-.\s]?
+    let flags = pii::scan(b"Phone: 555.123.4567");
+    if cfg!(feature = "pii") {
+        assert!(flags.has_phone, "phone with dot separators should match");
+    }
+}
+
+#[test]
+fn short_api_key_no_match() {
+    // API key regex requires 20+ chars after prefix: [a-zA-Z0-9_-]{20,}
+    let flags = pii::scan(b"sk-short");
+    if cfg!(feature = "pii") {
+        assert!(
+            !flags.has_api_key,
+            "short API key should not match (< 20 chars)"
+        );
+    }
+}

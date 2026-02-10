@@ -862,3 +862,408 @@ reasons[r] {
     event.pod_namespace = Some("restricted".into());
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 }
+
+// =====================================================================
+// Scenario 18: Array comprehension in Rego
+// =====================================================================
+
+#[test]
+fn scenario_array_comprehension() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+
+default decision = "allow"
+
+decision = "audit" {
+    arr := [x | x := input.provider; x != null]
+    count(arr) > 0
+}
+
+reasons[r] {
+    arr := [x | x := input.provider; x != null]
+    count(arr) > 0
+    r := "Provider found via array comprehension"
+}
+"#,
+    );
+
+    // Event with provider → audit
+    let mut event = bare_event();
+    event.provider = Some("OpenAI".into());
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+    assert!(d.reasons.iter().any(|r| r.contains("comprehension")));
+
+    // No provider → allow
+    let d2 = engine.evaluate(&bare_event()).unwrap();
+    assert_eq!(d2.action, Action::Allow);
+}
+
+// =====================================================================
+// Scenario 19: Nested helper rules
+// =====================================================================
+
+#[test]
+fn scenario_nested_helper_rules() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+
+default decision = "allow"
+
+decision = "deny" {
+    _is_sensitive_traffic
+}
+
+reasons[r] {
+    _is_sensitive_traffic
+    r := "Sensitive traffic detected"
+}
+
+# Level 1 helper: traffic is sensitive if it has PII and is LLM-bound
+_is_sensitive_traffic {
+    _is_llm_bound
+    _has_pii
+}
+
+# Level 2 helper: traffic is LLM-bound
+_is_llm_bound {
+    _has_provider
+}
+
+_is_llm_bound {
+    input.content_class == "LlmApi"
+}
+
+# Level 2 helper: has PII
+_has_pii {
+    input.pii_detected == true
+}
+
+# Level 3 helper: has any provider
+_has_provider {
+    input.provider != null
+}
+
+_has_provider {
+    input.llm_provider != null
+}
+"#,
+    );
+
+    // PII + provider → deny (traverses 3 levels of helpers)
+    let mut event = bare_event();
+    event.provider = Some("OpenAI".into());
+    event.pii_detected = Some(true);
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("Sensitive")));
+
+    // PII + content_class LlmApi → deny (different path through helpers)
+    let mut event2 = bare_event();
+    event2.content_class = Some("LlmApi".into());
+    event2.pii_detected = Some(true);
+    let d2 = engine.evaluate(&event2).unwrap();
+    assert_eq!(d2.action, Action::Deny);
+
+    // Provider but no PII → allow
+    let mut event3 = bare_event();
+    event3.provider = Some("OpenAI".into());
+    assert_eq!(engine.evaluate(&event3).unwrap().action, Action::Allow);
+
+    // PII but no provider/content_class → allow
+    let mut event4 = bare_event();
+    event4.pii_detected = Some(true);
+    assert_eq!(engine.evaluate(&event4).unwrap().action, Action::Allow);
+}
+
+// =====================================================================
+// Scenario 20: Multiple packages — only package busted is evaluated
+// =====================================================================
+
+#[test]
+fn scenario_multiple_packages_only_busted_evaluated() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // File with package busted (this one matters)
+    write_rego(
+        dir.path(),
+        "busted.rego",
+        r#"
+package busted
+default decision = "allow"
+decision = "audit" {
+    input.provider != null
+}
+"#,
+    );
+
+    // File with a different package (should NOT affect data.busted.decision)
+    write_rego(
+        dir.path(),
+        "other.rego",
+        r#"
+package other_system
+default decision = "deny"
+decision = "deny" {
+    true
+}
+"#,
+    );
+
+    let mut engine = PolicyEngine::new(dir.path()).unwrap();
+
+    // The "other_system" deny should NOT override busted's allow/audit
+    let d = engine.evaluate(&bare_event()).unwrap();
+    assert_eq!(
+        d.action,
+        Action::Allow,
+        "non-busted package should not affect decision"
+    );
+
+    let mut event = bare_event();
+    event.provider = Some("OpenAI".into());
+    let d2 = engine.evaluate(&event).unwrap();
+    assert_eq!(d2.action, Action::Audit, "busted package audit should work");
+}
+
+// =====================================================================
+// Scenario 21: Special JSON characters in event fields
+// =====================================================================
+
+#[test]
+fn scenario_special_json_chars_in_fields() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+reasons[r] { input.provider != null; r := concat("", ["Provider: ", input.provider]) }
+"#,
+    );
+
+    // Provider with quotes and backslashes
+    let mut event = bare_event();
+    event.provider = Some("Open\"AI\\Test\nLine".into());
+    let d = engine.evaluate(&event);
+    assert!(d.is_ok(), "special chars should not cause evaluation error");
+    assert_eq!(d.unwrap().action, Action::Audit);
+
+    // Process name with special chars
+    let mut event2 = bare_event();
+    event2.process_name = "my\"proc\\name".into();
+    event2.provider = Some("Normal".into());
+    let d2 = engine.evaluate(&event2);
+    assert!(d2.is_ok(), "special chars in process_name should not error");
+}
+
+// =====================================================================
+// Scenario 22: All 42 fields populated with non-default values
+// =====================================================================
+
+#[test]
+fn scenario_all_fields_populated() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.provider != null }
+reasons[r] { input.provider != null; r := concat("", ["Provider: ", input.provider]) }
+reasons[r] { input.mcp_method != null; r := concat("", ["MCP: ", input.mcp_method]) }
+reasons[r] { input.llm_provider != null; r := concat("", ["LLM: ", input.llm_provider]) }
+"#,
+    );
+
+    let event = ProcessedEvent {
+        event_type: "TLS_DATA_WRITE".into(),
+        timestamp: "23:59:59.999".into(),
+        pid: 99999,
+        uid: 65534,
+        process_name: "full-test-binary".into(),
+        src_ip: "192.168.100.200".into(),
+        src_port: 60000,
+        dst_ip: "203.0.113.50".into(),
+        dst_port: 8443,
+        bytes: 999_999,
+        provider: Some("Anthropic".into()),
+        policy: Some("custom-policy-v2".into()),
+        container_id: "abc123def456".into(),
+        cgroup_id: 12345678,
+        request_rate: Some(42.5),
+        session_bytes: Some(1_000_000),
+        pod_name: Some("ai-gateway-pod-xyz".into()),
+        pod_namespace: Some("ml-production".into()),
+        service_account: Some("ai-service-account".into()),
+        ml_confidence: Some(0.99),
+        ml_provider: Some("Anthropic".into()),
+        behavior_class: Some("llm_api_call".into()),
+        cluster_id: Some(7),
+        sni: Some("api.anthropic.com".into()),
+        tls_protocol: Some("TLSv1.3".into()),
+        tls_details: Some("ECDHE-RSA-AES256-GCM-SHA384".into()),
+        tls_payload: Some("POST /v1/messages HTTP/1.1".into()),
+        content_class: Some("LlmApi".into()),
+        llm_provider: Some("Anthropic".into()),
+        llm_endpoint: Some("/v1/messages".into()),
+        llm_model: Some("claude-3-opus".into()),
+        mcp_method: Some("tools/call".into()),
+        mcp_category: Some("tool_execution".into()),
+        agent_sdk: Some("anthropic-python/0.25.0".into()),
+        agent_fingerprint: Some(0xabc123),
+        classifier_confidence: Some(0.98),
+        pii_detected: Some(false),
+        llm_user_message: Some("Hello world".into()),
+        llm_system_prompt: Some("You are a helpful assistant".into()),
+        llm_messages_json: Some(r#"[{"role":"user","content":"hi"}]"#.into()),
+        llm_stream: Some(false),
+    };
+
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+    assert!(
+        !d.reasons.is_empty(),
+        "should have reasons with all fields set"
+    );
+}
+
+// =====================================================================
+// Scenario 23: Many rapid sequential evaluations
+// =====================================================================
+
+#[test]
+fn scenario_many_rapid_evaluations() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+default decision = "allow"
+decision = "deny" { input.pii_detected == true }
+reasons[r] { input.pii_detected == true; r := "PII detected" }
+"#,
+    );
+
+    for i in 0..1000 {
+        let mut event = bare_event();
+        event.pid = i;
+        let has_pii = i % 7 == 0;
+        if has_pii {
+            event.pii_detected = Some(true);
+        }
+        let d = engine.evaluate(&event).unwrap();
+        let expected = if has_pii { Action::Deny } else { Action::Allow };
+        assert_eq!(
+            d.action, expected,
+            "iteration {i}: expected {:?}, got {:?}",
+            expected, d.action
+        );
+    }
+}
+
+// =====================================================================
+// Scenario 24: Large data.json with 1000 entries
+// =====================================================================
+
+#[test]
+fn scenario_large_data_json() {
+    // Build a data.json with 1000 entries in an array
+    let entries: Vec<String> = (0..1000).map(|i| format!("\"provider_{i}\"")).collect();
+    let data = format!("{{\"providers\": [{}]}}", entries.join(","));
+
+    let (_dir, mut engine) = engine_with_data(
+        r#"
+package busted
+default decision = "deny"
+decision = "allow" {
+    input.provider == data.providers[_]
+}
+"#,
+        &data,
+    );
+
+    // Match a provider in the middle of the list
+    let mut event = bare_event();
+    event.provider = Some("provider_500".into());
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Allow);
+
+    // Match the last provider
+    event.provider = Some("provider_999".into());
+    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+
+    // No match
+    event.provider = Some("provider_9999".into());
+    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
+}
+
+// =====================================================================
+// Scenario 25: Set operations in Rego
+// =====================================================================
+
+#[test]
+fn scenario_set_operations() {
+    let (_dir, mut engine) = engine_with_data(
+        r#"
+package busted
+
+default decision = "allow"
+
+# Collect the set of tags that apply to this event
+tags[t] {
+    input.provider != null
+    t := "has_provider"
+}
+tags[t] {
+    input.pii_detected == true
+    t := "has_pii"
+}
+tags[t] {
+    input.mcp_method != null
+    t := "has_mcp"
+}
+
+# Deny if the event has both "has_provider" and "has_pii" in its tag set
+decision = "deny" {
+    tags["has_provider"]
+    tags["has_pii"]
+}
+
+# Audit if any tag matches a "watched" tag from data
+decision = "audit" {
+    watched := data.watched_tags[_]
+    tags[watched]
+    not tags["has_pii"]
+}
+
+reasons[r] {
+    tags["has_provider"]
+    tags["has_pii"]
+    r := "PII with provider detected via set membership"
+}
+"#,
+        r#"{"watched_tags": ["has_provider", "has_mcp"]}"#,
+    );
+
+    // Provider + PII → deny (set intersection: both tags present)
+    let mut event = bare_event();
+    event.provider = Some("OpenAI".into());
+    event.pii_detected = Some(true);
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("set membership")));
+
+    // Provider only → audit (watched tag matches)
+    let mut event2 = bare_event();
+    event2.provider = Some("OpenAI".into());
+    assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Audit);
+
+    // MCP only → audit (watched tag matches)
+    let mut event3 = bare_event();
+    event3.mcp_method = Some("tools/call".into());
+    assert_eq!(engine.evaluate(&event3).unwrap().action, Action::Audit);
+
+    // Nothing → allow
+    assert_eq!(
+        engine.evaluate(&bare_event()).unwrap().action,
+        Action::Allow
+    );
+}

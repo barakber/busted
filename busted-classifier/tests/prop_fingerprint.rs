@@ -342,3 +342,134 @@ proptest! {
         prop_assert_eq!(fp1.sdk.as_ref().map(|s| &s.name), fp2.sdk.as_ref().map(|s| &s.name));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit: multiple SDK patterns in one User-Agent — first match wins
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multiple_sdk_patterns_first_wins() {
+    // UA contains both "openai-python" and "langchain" — openai-python is checked first
+    let sdk = fingerprint::detect_sdk("openai-python/1.0 langchain/0.1").unwrap();
+    assert_eq!(sdk.name, "openai-python");
+    assert_eq!(sdk.version.as_deref(), Some("1.0"));
+}
+
+// ---------------------------------------------------------------------------
+// Unit: SDK name without version separator → version is None
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sdk_name_without_version_separator() {
+    // "langchain" followed by no separator character → version None
+    let sdk = fingerprint::detect_sdk("MyApp langchain").unwrap();
+    assert_eq!(sdk.name, "langchain");
+    // No '/' or ' ' followed by a version → None
+    assert!(sdk.version.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Unit: version with +build suffix is truncated at +
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_with_build_suffix_truncated() {
+    // extract_version uses take_while(alphanumeric || '.' || '-')
+    // '+' is not in that set, so the version stops at '+'
+    let sdk = fingerprint::detect_sdk("openai-python/1.2.3+build42").unwrap();
+    assert_eq!(sdk.version.as_deref(), Some("1.2.3"));
+}
+
+// ---------------------------------------------------------------------------
+// Unit: signature hash with no interesting headers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signature_hash_no_headers() {
+    let req = http::HttpRequestInfo {
+        method: "POST".to_string(),
+        path: "/v1/test".to_string(),
+        version: "HTTP/1.1".to_string(),
+        headers: std::collections::HashMap::new(),
+        body_offset: None,
+    };
+    let jf = json::JsonFields::default();
+    let h = fingerprint::compute_signature_hash(&req, &jf);
+    // Should produce a valid hash (not the FNV offset basis alone since method+path are hashed)
+    assert_ne!(h, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: signature hash with empty top_level_keys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn signature_hash_empty_keys() {
+    let req = http::HttpRequestInfo {
+        method: "GET".to_string(),
+        path: "/health".to_string(),
+        version: "HTTP/1.1".to_string(),
+        headers: std::collections::HashMap::from([("host".to_string(), "example.com".to_string())]),
+        body_offset: None,
+    };
+    let jf = json::JsonFields {
+        top_level_keys: vec![],
+        ..Default::default()
+    };
+    let h = fingerprint::compute_signature_hash(&req, &jf);
+    assert_ne!(h, 0);
+
+    // Adding a key should change the hash
+    let jf2 = json::JsonFields {
+        top_level_keys: vec!["model".to_string()],
+        ..Default::default()
+    };
+    let h2 = fingerprint::compute_signature_hash(&req, &jf2);
+    assert_ne!(h, h2);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: build_fingerprint with no body (body_offset=None)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_fingerprint_no_body() {
+    let req = http::HttpRequestInfo {
+        method: "POST".to_string(),
+        path: "/v1/chat/completions".to_string(),
+        version: "HTTP/1.1".to_string(),
+        headers: std::collections::HashMap::from([
+            ("host".to_string(), "api.openai.com".to_string()),
+            ("user-agent".to_string(), "openai-python/1.0.0".to_string()),
+        ]),
+        body_offset: None,
+    };
+    // No body → empty JsonFields
+    let jf = json::JsonFields::default();
+    let fp = fingerprint::build_fingerprint(&req, &jf);
+
+    assert_eq!(fp.sdk.as_ref().unwrap().name, "openai-python");
+    assert!(fp.model_params.model.is_none());
+    assert!(fp.model_params.temperature.is_none());
+    assert_ne!(fp.signature_hash, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Unit: empty headers map → no SDK, no API version
+// ---------------------------------------------------------------------------
+
+#[test]
+fn empty_headers_map() {
+    let req = http::HttpRequestInfo {
+        method: "POST".to_string(),
+        path: "/test".to_string(),
+        version: "HTTP/1.1".to_string(),
+        headers: std::collections::HashMap::new(),
+        body_offset: None,
+    };
+    let jf = json::JsonFields::default();
+    let fp = fingerprint::build_fingerprint(&req, &jf);
+
+    assert!(fp.sdk.is_none());
+    assert!(fp.api_version.is_none());
+}
