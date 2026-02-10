@@ -188,7 +188,7 @@ jobs:
           chmod +x target/release/busted
       - name: Install nfpm
         run: |
-          NFPM_VERSION=2.41.1
+          NFPM_VERSION=2.45.0
           curl -sSLo /tmp/nfpm.tar.gz \
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
           tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm

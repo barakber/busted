@@ -6,6 +6,8 @@ maintainer: Barak Bercovitz
 description: eBPF-based LLM/AI communication monitoring and policy enforcement
 homepage: https://github.com/barakber/busted
 license: MIT
+section: utils
+priority: optional
 
 contents:
   - src: target/release/busted
@@ -22,10 +24,6 @@ contents:
     dst: /usr/share/doc/busted/README.md
     file_info:
       mode: 0644
-
-deb:
-  section: utils
-  priority: optional
 
 rpm:
   group: Applications/System
