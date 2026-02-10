@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Subcommand"],"fn":["build_ebpf","build_userspace","main","run","try_main"],"struct":["BuildEbpfOptions","BuildOptions","Options","RunOptions"]};
+window.SIDEBAR_ITEMS = {"constant":["CRATE_DIRS"],"enum":["Subcommand"],"fn":["build_ebpf","build_userspace","main","run","try_main","version_bump","version_check","workspace_root"],"struct":["BuildEbpfOptions","BuildOptions","Options","RunOptions","VersionBumpOptions"]};
