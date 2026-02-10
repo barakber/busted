@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::{path::PathBuf, process::Command};
+use std::{fs, path::PathBuf, process::Command};
 
 #[derive(Debug, Parser)]
 pub struct Options {
@@ -16,6 +16,10 @@ enum Subcommand {
     Build(BuildOptions),
     /// Run the agent (builds everything first)
     Run(RunOptions),
+    /// Bump version across the entire workspace
+    VersionBump(VersionBumpOptions),
+    /// Check that all workspace versions are consistent
+    VersionCheck,
 }
 
 #[derive(Debug, Parser)]
@@ -51,6 +55,12 @@ pub struct RunOptions {
     run_args: Vec<String>,
 }
 
+#[derive(Debug, Parser)]
+pub struct VersionBumpOptions {
+    /// The new version (e.g. 0.2.0)
+    version: String,
+}
+
 fn main() {
     if let Err(e) = try_main() {
         eprintln!("{:#}", e);
@@ -78,7 +88,16 @@ fn try_main() -> Result<()> {
             build_userspace(opts.release, opts.features.as_deref())?;
             run(opts)
         }
+        Subcommand::VersionBump(opts) => version_bump(&opts.version),
+        Subcommand::VersionCheck => version_check(),
     }
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be inside workspace")
+        .to_path_buf()
 }
 
 fn build_ebpf(opts: BuildEbpfOptions) -> Result<()> {
@@ -154,4 +173,161 @@ fn run(opts: RunOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Publishable crate directories (order doesn't matter for version bumping).
+const CRATE_DIRS: &[&str] = &[
+    "busted-types",
+    "busted-classifier",
+    "busted-ebpf",
+    "busted-ml",
+    "busted-opa",
+    "busted-ui",
+    "busted-agent",
+    "busted-cli",
+];
+
+fn version_bump(new_version: &str) -> Result<()> {
+    // Validate version format (basic semver check)
+    let parts: Vec<&str> = new_version.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+        anyhow::bail!(
+            "Invalid version '{}': expected semver format X.Y.Z",
+            new_version
+        );
+    }
+
+    let root = workspace_root();
+
+    // 1. Update workspace.package.version in root Cargo.toml
+    let root_toml_path = root.join("Cargo.toml");
+    let contents = fs::read_to_string(&root_toml_path)
+        .with_context(|| format!("Failed to read {}", root_toml_path.display()))?;
+    let mut doc = contents
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("Failed to parse {}", root_toml_path.display()))?;
+
+    doc["workspace"]["package"]["version"] = toml_edit::value(new_version);
+    fs::write(&root_toml_path, doc.to_string())
+        .with_context(|| format!("Failed to write {}", root_toml_path.display()))?;
+    println!("  Updated workspace.package.version in Cargo.toml");
+
+    // 2. Update path dependency versions in each crate
+    for dir in CRATE_DIRS {
+        let toml_path = root.join(dir).join("Cargo.toml");
+        if !toml_path.exists() {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&toml_path)
+            .with_context(|| format!("Failed to read {}", toml_path.display()))?;
+        let mut doc = contents
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("Failed to parse {}", toml_path.display()))?;
+
+        let mut updated = false;
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(deps) = doc.get_mut(section).and_then(|d| d.as_table_mut()) {
+                for (dep_name, dep_value) in deps.iter_mut() {
+                    if let Some(tbl) = dep_value.as_inline_table_mut() {
+                        if tbl.contains_key("path") && tbl.contains_key("version") {
+                            tbl["version"] =
+                                toml_edit::value(new_version).as_value().unwrap().clone();
+                            updated = true;
+                            println!("  Updated {}/{} -> {}", dir, dep_name, new_version);
+                        }
+                    } else if let Some(tbl) = dep_value.as_table_mut() {
+                        if tbl.contains_key("path") && tbl.contains_key("version") {
+                            tbl["version"] = toml_edit::value(new_version);
+                            updated = true;
+                            println!("  Updated {}/{} -> {}", dir, dep_name, new_version);
+                        }
+                    }
+                }
+            }
+        }
+
+        if updated {
+            fs::write(&toml_path, doc.to_string())
+                .with_context(|| format!("Failed to write {}", toml_path.display()))?;
+        }
+    }
+
+    println!("\nVersion bumped to {}", new_version);
+    Ok(())
+}
+
+fn version_check() -> Result<()> {
+    let root = workspace_root();
+
+    // Read expected version from workspace
+    let root_toml_path = root.join("Cargo.toml");
+    let contents = fs::read_to_string(&root_toml_path)
+        .with_context(|| format!("Failed to read {}", root_toml_path.display()))?;
+    let doc = contents
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("Failed to parse {}", root_toml_path.display()))?;
+
+    let expected = doc["workspace"]["package"]["version"]
+        .as_str()
+        .context("workspace.package.version not found in root Cargo.toml")?;
+
+    println!("Workspace version: {}", expected);
+
+    let mut errors = Vec::new();
+
+    for dir in CRATE_DIRS {
+        let toml_path = root.join(dir).join("Cargo.toml");
+        if !toml_path.exists() {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&toml_path)
+            .with_context(|| format!("Failed to read {}", toml_path.display()))?;
+        let doc = contents
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("Failed to parse {}", toml_path.display()))?;
+
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(deps) = doc.get(section).and_then(|d| d.as_table()) {
+                for (dep_name, dep_value) in deps.iter() {
+                    let (has_path, version) = if let Some(tbl) = dep_value.as_inline_table() {
+                        (
+                            tbl.contains_key("path"),
+                            tbl.get("version").and_then(|v| v.as_str()),
+                        )
+                    } else if let Some(tbl) = dep_value.as_table() {
+                        (
+                            tbl.contains_key("path"),
+                            tbl.get("version").and_then(|v| v.as_str()),
+                        )
+                    } else {
+                        (false, None)
+                    };
+
+                    if has_path {
+                        if let Some(ver) = version {
+                            if ver != expected {
+                                errors.push(format!(
+                                    "  {}/Cargo.toml: {}.{} has version \"{}\" (expected \"{}\")",
+                                    dir, section, dep_name, ver, expected
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        println!("All path dependency versions are consistent.");
+        Ok(())
+    } else {
+        eprintln!("Version mismatches found:");
+        for e in &errors {
+            eprintln!("{}", e);
+        }
+        anyhow::bail!("{} version mismatch(es) found", errors.len());
+    }
 }
