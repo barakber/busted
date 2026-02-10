@@ -133,3 +133,197 @@ jobs:
             --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  build-binary:
+    name: Build Binary (${{ matrix.arch }})
+    needs: verify
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+      - name: Build release binary
+        run: |
+          cargo build -p busted --release \
+            --features monitor,policy,tls,opa,ml,k8s,prometheus
+      - name: Strip and rename binary
+        run: |
+          strip target/release/busted
+          cp target/release/busted busted-linux-${{ matrix.arch }}
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: busted-linux-${{ matrix.arch }}
+          path: busted-linux-${{ matrix.arch }}
+          retention-days: 5
+
+  build-packages:
+    name: Package ${{ matrix.format }} (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: [verify, build-binary]
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        format: [deb, rpm, apk]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: busted-linux-${{ matrix.arch }}
+          path: .
+      - name: Place binary for nfpm
+        run: |
+          mkdir -p target/release
+          cp busted-linux-${{ matrix.arch }} target/release/busted
+          chmod +x target/release/busted
+      - name: Install nfpm
+        run: |
+          NFPM_VERSION=2.41.1
+          curl -sSLo /tmp/nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm
+          nfpm --version
+      - name: Build package
+        run: |
+          mkdir -p dist
+          export VERSION=${{ needs.verify.outputs.version }}
+          export ARCH=${{ matrix.arch }}
+          nfpm package --packager ${{ matrix.format }} --target dist/
+      - name: List package
+        run: ls -lh dist/
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: busted-pkg-${{ matrix.format }}-${{ matrix.arch }}
+          path: dist/
+          retention-days: 5
+
+  attach-assets:
+    name: Attach Release Assets
+    runs-on: ubuntu-latest
+    needs: [verify, build-binary, build-packages, github-release]
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: busted-*
+          path: artifacts/
+          merge-multiple: true
+      - name: List release assets
+        run: ls -lh artifacts/
+      - name: Upload assets to GitHub Release
+        run: |
+          gh release upload "${{ github.ref_name }}" artifacts/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+  publish-repos:
+    name: Publish Package Repos
+    runs-on: ubuntu-latest
+    needs: [verify, build-packages]
+    if: needs.verify.outputs.dry_run == 'false'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: busted-pkg-*
+          path: packages/
+          merge-multiple: true
+
+      - name: List downloaded packages
+        run: ls -lh packages/
+
+      - name: Build APT repository
+        run: |
+          sudo apt-get update && sudo apt-get install -y dpkg-dev
+          mkdir -p docs/repos/apt
+          cp packages/*.deb docs/repos/apt/
+          cd docs/repos/apt
+          dpkg-scanpackages --multiversion . > Packages
+          gzip -k Packages
+          cat > Release <<EOF
+          Origin: busted
+          Label: busted
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: Busted - eBPF-based LLM/AI communication monitoring
+          EOF
+
+      - name: Build YUM repository
+        run: |
+          sudo apt-get install -y createrepo-c
+          mkdir -p docs/repos/yum
+          cp packages/*.rpm docs/repos/yum/
+          cd docs/repos/yum
+          createrepo_c .
+
+      - name: Copy APK packages
+        run: |
+          mkdir -p docs/repos/apk
+          cp packages/*.apk docs/repos/apk/
+
+      - name: Generate repo index page
+        run: |
+          VERSION=${{ needs.verify.outputs.version }}
+          cat > docs/repos/index.html <<'HTMLEOF'
+          <!DOCTYPE html>
+          <html>
+          <head><title>Busted Package Repositories</title></head>
+          <body>
+          <h1>Busted Package Repositories</h1>
+          <p>Packages are available for <strong>amd64</strong> and <strong>arm64</strong> architectures.</p>
+
+          <h2>APT (Debian/Ubuntu)</h2>
+          <pre><code>echo "deb [trusted=yes] https://barakber.github.io/busted/repos/apt ./" | sudo tee /etc/apt/sources.list.d/busted.list
+          sudo apt-get update
+          sudo apt-get install busted</code></pre>
+
+          <h2>YUM/DNF (RHEL/Fedora/CentOS)</h2>
+          <pre><code>sudo tee /etc/yum.repos.d/busted.repo &lt;&lt;EOF
+          [busted]
+          name=Busted
+          baseurl=https://barakber.github.io/busted/repos/yum
+          enabled=1
+          gpgcheck=0
+          EOF
+          sudo dnf install busted</code></pre>
+
+          <h2>APK (Alpine)</h2>
+          <p>Download directly from <a href="apk/">apk/</a> and install with <code>apk add --allow-untrusted busted-*.apk</code></p>
+
+          <h2>GitHub Releases</h2>
+          <p>Download binaries and packages from <a href="https://github.com/barakber/busted/releases">GitHub Releases</a></p>
+          </body>
+          </html>
+          HTMLEOF
+
+      - name: Commit and push to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/repos/
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Update package repos for v${{ needs.verify.outputs.version }}"
+          git push origin main

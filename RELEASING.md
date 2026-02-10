@@ -52,6 +52,31 @@ Crates are published in tiers with delays for index propagation:
 3. `busted-agent` (--no-verify)
 4. `busted` (the CLI)
 
+## Package Artifacts
+
+Each release produces Linux system packages for **amd64** and **arm64**:
+
+- **`.deb`** — Debian/Ubuntu (APT)
+- **`.rpm`** — RHEL/Fedora/CentOS (YUM/DNF)
+- **`.apk`** — Alpine (APK)
+
+Binaries are compiled natively on each architecture (GitHub's `ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64). Packages are then built from the binaries using [nfpm](https://nfpm.goreleaser.com/) via a matrix of arch × format (6 combinations). The packages contain the `busted` CLI binary and documentation.
+
+### GitHub Pages Repos
+
+On non-dry-run releases, the workflow publishes APT and YUM repositories to GitHub Pages (`docs/repos/` on `main` branch):
+
+- **APT**: `https://barakber.github.io/busted/repos/apt`
+- **YUM**: `https://barakber.github.io/busted/repos/yum`
+- **APK**: Raw `.apk` files at `https://barakber.github.io/busted/repos/apk/`
+
+Install instructions are at `https://barakber.github.io/busted/repos/`.
+
+### Setup Required
+
+- Enable GitHub Pages: Settings → Pages → Source: `main` branch, `/docs`
+- (Future) Add GPG key secret for signed repos
+
 ## Manual / Dry Run
 
 Use the GitHub Actions "Run workflow" button on the Release workflow to trigger a manual run. Set `dry_run` to `true` to run CI checks and version verification without publishing.
