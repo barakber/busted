@@ -685,15 +685,11 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
         warn!("Failed to increase rlimit");
     }
 
-    // Load eBPF program
-    #[cfg(debug_assertions)]
-    let mut bpf = Ebpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/debug/busted-ebpf"
-    ))?;
-    #[cfg(not(debug_assertions))]
-    let mut bpf = Ebpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/release/busted-ebpf"
-    ))?;
+    // Load eBPF program (compiled by build.rs via aya-build)
+    let mut bpf = Ebpf::load(include_bytes_aligned!(concat!(
+        env!("OUT_DIR"),
+        "/busted-ebpf"
+    )))?;
 
     if let Err(e) = EbpfLogger::init(&mut bpf) {
         warn!("Failed to initialize eBPF logger: {}", e);

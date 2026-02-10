@@ -19,7 +19,7 @@ default-members = [
     "busted-ml",
     "busted-opa",
     "busted-ui",
-    "busted-cli",
+    "busted-cli",  # published as crate name "busted"
     "xtask",
 ]
 
@@ -43,6 +43,9 @@ env_logger = "0.11"
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Build-time dependencies
+cargo_metadata = "0.23"
 
 # eBPF dependencies
 aya-ebpf = "0.1"

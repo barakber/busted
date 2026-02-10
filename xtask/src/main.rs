@@ -111,8 +111,8 @@ fn build_ebpf(opts: BuildEbpfOptions) -> Result<()> {
 }
 
 fn build_userspace(release: bool, features: Option<&str>) -> Result<()> {
-    // Build busted-cli with full features (produces the `busted` binary)
-    let mut args = vec!["build", "--package", "busted-cli", "--features", "full"];
+    // Build the `busted` CLI crate with full features
+    let mut args = vec!["build", "--package", "busted", "--features", "full"];
 
     if release {
         args.push("--release");

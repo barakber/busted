@@ -12,7 +12,7 @@ pub fn run(command: PolicyCommand) -> Result<()> {
         let _ = command;
         anyhow::bail!(
             "The 'policy' feature is not enabled. \
-             Rebuild with: cargo install busted-cli --features policy"
+             Rebuild with: cargo install busted --features policy"
         );
     }
 

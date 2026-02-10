@@ -1,6 +1,6 @@
 [package]
-name = "busted-cli"
-description = "Unified CLI for the Busted LLM/AI communication monitoring system"
+name = "busted"
+description = "eBPF-based LLM/AI communication monitoring tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,8 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-publish = false
+keywords = ["ebpf", "llm", "monitoring", "cli", "ai"]
+categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
 name = "busted"
@@ -20,10 +21,10 @@ anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 serde_json = { workspace = true }
-busted-agent = { path = "../busted-agent", optional = true }
-busted-ui = { path = "../busted-ui", optional = true }
-busted-opa = { path = "../busted-opa", optional = true }
-busted-types = { path = "../busted-types", features = ["user"] }
+busted-agent = { version = "0.1.0", path = "../busted-agent", optional = true }
+busted-ui = { version = "0.1.0", path = "../busted-ui", optional = true }
+busted-opa = { version = "0.1.0", path = "../busted-opa", optional = true }
+busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
 tokio = { workspace = true }
 
 [features]

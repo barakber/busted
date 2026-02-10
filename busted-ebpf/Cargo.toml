@@ -6,13 +6,14 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-publish = false
+keywords = ["ebpf", "llm", "monitoring", "bpf", "ai"]
+categories = ["network-programming"]
 
 [dependencies]
 aya-ebpf.workspace = true
 aya-ebpf-bindings = "0.1.2"
 aya-log-ebpf.workspace = true
-busted-types = { path = "../busted-types" }
+busted-types = { version = "0.1.0", path = "../busted-types" }
 
 [build-dependencies]
 

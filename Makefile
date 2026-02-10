@@ -17,7 +17,7 @@ build-agent: ## Build only the standalone agent binary
 	cargo build -p busted-agent $(if $(AGENT_FEATURES),--features $(AGENT_FEATURES),)
 
 build-cli: ## Build the unified CLI with full features
-	cargo build -p busted-cli --features full
+	cargo build -p busted --features full
 
 build-ui: ## Build the egui dashboard
 	cargo build -p busted-ui
@@ -29,7 +29,7 @@ build-k8s: ## Build the agent with Kubernetes enrichment
 	cargo build -p busted-agent --features k8s
 
 build-all-features: ## Build the CLI with all optional features
-	cargo build -p busted-cli --features full
+	cargo build -p busted --features full
 
 ## Run targets -----------------------------------------------------------------
 
@@ -52,11 +52,11 @@ run-ui: build ## Run the dashboard UI
 
 check: ## Type-check all crates (no codegen)
 	cargo check --workspace --exclude busted-ebpf
-	cargo check -p busted-cli --features full
+	cargo check -p busted --features full
 
 clippy: ## Run clippy lints
 	cargo clippy --workspace --exclude busted-ebpf -- -D warnings
-	cargo clippy -p busted-cli --features full -- -D warnings
+	cargo clippy -p busted --features full -- -D warnings
 
 fmt: ## Format all code
 	cargo fmt --all

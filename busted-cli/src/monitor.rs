@@ -8,7 +8,7 @@ pub fn run(args: MonitorArgs) -> Result<()> {
         let _ = args;
         anyhow::bail!(
             "The 'monitor' feature is not enabled. \
-             Rebuild with: cargo install busted-cli --features monitor"
+             Rebuild with: cargo install busted --features monitor"
         );
     }
 
