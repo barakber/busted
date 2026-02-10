@@ -1,4 +1,4 @@
-.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release clean check clippy fmt test help
+.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release clean check clippy fmt test install uninstall help
 
 AGENT_FEATURES ?=
 
@@ -51,11 +51,11 @@ run-ui: build ## Run the dashboard UI
 ## Quality targets -------------------------------------------------------------
 
 check: ## Type-check all crates (no codegen)
-	cargo check --workspace
+	cargo check --workspace --exclude busted-ebpf
 	cargo check -p busted-cli --features full
 
 clippy: ## Run clippy lints
-	cargo clippy --workspace -- -D warnings
+	cargo clippy --workspace --exclude busted-ebpf -- -D warnings
 	cargo clippy -p busted-cli --features full -- -D warnings
 
 fmt: ## Format all code
@@ -65,7 +65,20 @@ fmt-check: ## Check formatting without modifying
 	cargo fmt --all -- --check
 
 test: ## Run all tests
-	cargo test --workspace
+	cargo test --workspace --exclude busted-ebpf
+
+## Install targets -------------------------------------------------------------
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+
+install: ## Install busted to $(BINDIR) (run make build-release first)
+	@test -f target/release/busted || { echo "Error: target/release/busted not found. Run 'make build-release' first."; exit 1; }
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 755 target/release/busted $(DESTDIR)$(BINDIR)/busted
+
+uninstall: ## Remove busted from $(BINDIR) (may need sudo)
+	rm -f $(DESTDIR)$(BINDIR)/busted
 
 ## Maintenance -----------------------------------------------------------------
 

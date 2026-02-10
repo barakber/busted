@@ -19,3 +19,5 @@ busted-types = { path = "../busted-types" }
 [[bin]]
 name = "busted-ebpf"
 path = "src/main.rs"
+test = false
+bench = false
