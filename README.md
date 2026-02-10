@@ -105,6 +105,46 @@ busted/
 └── Cargo.toml          # Workspace configuration
 ```
 
+## Installation
+
+### APT (Debian/Ubuntu)
+
+```bash
+echo "deb [trusted=yes] https://barakber.github.io/busted/repos/apt ./" \
+  | sudo tee /etc/apt/sources.list.d/busted.list
+sudo apt-get update
+sudo apt-get install busted
+```
+
+### YUM/DNF (RHEL/Fedora/CentOS)
+
+```bash
+sudo tee /etc/yum.repos.d/busted.repo <<EOF
+[busted]
+name=Busted
+baseurl=https://barakber.github.io/busted/repos/yum
+enabled=1
+gpgcheck=0
+EOF
+sudo dnf install busted
+```
+
+### APK (Alpine)
+
+Download the `.apk` from [GitHub Releases](https://github.com/barakber/busted/releases) and install:
+
+```bash
+apk add --allow-untrusted busted-*.apk
+```
+
+### Direct Download
+
+Pre-built binaries and packages (`.deb`, `.rpm`, `.apk`) are attached to each [GitHub Release](https://github.com/barakber/busted/releases).
+
+### From Source
+
+See [Getting Started](#getting-started) below for building from source.
+
 ## Getting Started
 
 ### Prerequisites
