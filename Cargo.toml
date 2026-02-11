@@ -33,6 +33,10 @@ authors = ["Barak Bercovitz <barakber@gmail.com>"]
 repository = "https://github.com/barakber/busted"
 homepage = "https://github.com/barakber/busted"
 rust-version = "1.75"
+description = "eBPF-based LLM/AI communication monitoring and policy enforcement"
+documentation = "https://barakber.github.io/busted/"
+keywords = ["ebpf", "llm", "monitoring", "security", "ai"]
+categories = ["network-programming", "command-line-utilities"]
 
 [workspace.dependencies]
 # Shared dependencies across crates

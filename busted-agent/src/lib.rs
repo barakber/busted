@@ -1,3 +1,40 @@
+//! Userspace eBPF monitoring agent for LLM/AI communication tracking.
+//!
+//! This crate loads eBPF programs into the kernel (kprobes, uprobes, LSM hooks),
+//! consumes events via a RingBuf, classifies traffic against known LLM providers,
+//! and broadcasts [`ProcessedEvent`]s to CLI output, a Unix socket server (for the
+//! dashboard UI), and optional SIEM sinks.
+//!
+//! # Feature flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `tls` | SSL_write/SSL_read plaintext capture and SNI extraction |
+//! | `ml` | Behavioral traffic classification via `busted_ml` |
+//! | `identity` | Cross-event agent identity tracking via `busted_identity` |
+//! | `opa` | OPA/Rego policy evaluation via `busted_opa` |
+//! | `k8s` | Kubernetes pod metadata enrichment |
+//! | `prometheus` | Prometheus metrics exporter |
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use busted_agent::{AgentConfig, run_agent};
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let config = AgentConfig {
+//!     verbose: false,
+//!     format: "text".into(),
+//!     enforce: false,
+//!     output: "stdout".into(),
+//!     policy_dir: None,
+//!     policy_rule: None,
+//!     metrics_port: 9184,
+//! };
+//! run_agent(config).await
+//! # }
+//! ```
+
 pub mod events;
 #[cfg(feature = "k8s")]
 pub mod k8s;

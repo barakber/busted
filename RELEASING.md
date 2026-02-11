@@ -48,7 +48,7 @@ The `release.yml` workflow will:
 Crates are published in tiers with delays for index propagation:
 
 1. `busted-types`, `busted-classifier`
-2. `busted-ebpf` (--no-verify), `busted-ml`, `busted-opa`, `busted-ui`
+2. `busted-ebpf` (--no-verify), `busted-identity`, `busted-ml`, `busted-opa`, `busted-ui`
 3. `busted-agent` (--no-verify)
 4. `busted` (the CLI)
 

@@ -1,3 +1,25 @@
+//! Native egui dashboard for real-time LLM communication monitoring.
+//!
+//! Connects to the `busted-agent` over a Unix socket (`/tmp/busted.sock`) and
+//! displays a live table of classified events with provider statistics, process
+//! views, and identity tracking columns.
+//!
+//! # Modes
+//!
+//! - **Live mode** (default): Reads NDJSON events from the agent's Unix socket.
+//!   Requires the agent to be running.
+//! - **Demo mode** (`--demo`): Generates synthetic events for quick evaluation
+//!   without requiring root or a running agent.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use busted_ui::{UiConfig, run_ui};
+//!
+//! let config = UiConfig { demo_mode: true };
+//! run_ui(config).unwrap();
+//! ```
+
 pub mod app;
 pub mod demo;
 pub mod views;

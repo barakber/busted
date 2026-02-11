@@ -24,6 +24,8 @@ jobs:
           rm -rf docs
           cp -r target/doc docs
           cp docs-landing/index.html docs/index.html
+          touch docs/.nojekyll
+          cp busted.gif docs/busted.gif 2>/dev/null || true
       - name: Commit and push docs
         run: |
           git config user.name "github-actions[bot]"

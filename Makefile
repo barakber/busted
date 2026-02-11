@@ -1,4 +1,4 @@
-.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release run-text clean check clippy fmt test install uninstall docker-build helm-lint helm-test helm-e2e help
+.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release run-text clean check clippy fmt test docs install uninstall docker-build helm-lint helm-test helm-e2e help
 
 AGENT_FEATURES ?=
 
@@ -69,6 +69,15 @@ fmt-check: ## Check formatting without modifying
 
 test: ## Run all tests
 	cargo test --workspace --exclude busted-ebpf
+
+## Docs targets ----------------------------------------------------------------
+
+docs: ## Build rustdoc + landing page locally
+	BUSTED_SKIP_EBPF_BUILD=1 cargo doc --workspace --exclude busted-ebpf --no-deps
+	rm -rf docs && cp -r target/doc docs
+	cp docs-landing/index.html docs/index.html
+	cp busted.gif docs/busted.gif 2>/dev/null || true
+	touch docs/.nojekyll
 
 ## Install targets -------------------------------------------------------------
 

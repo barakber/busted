@@ -4,202 +4,582 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Busted — eBPF-based LLM/AI Communication Monitor</title>
+<meta name="description" content="Kernel-native monitoring and policy enforcement for LLM/AI communications. Built with Rust and eBPF.">
 <style>
+/* ── Reset & Variables ─────────────────────────────────────────────── */
 :root {
-  --bg: #fff;
-  --fg: #333;
-  --fg-dim: #666;
-  --accent: #4d76ae;
-  --border: #e0e0e0;
-  --code-bg: #f5f5f5;
-  --card-bg: #fafafa;
+  --bg: #ffffff;
+  --bg-alt: #f8f9fa;
+  --fg: #1a1a2e;
+  --fg-dim: #555;
+  --fg-muted: #888;
+  --accent: #4361ee;
+  --accent-light: #eef1ff;
+  --border: #e2e4e9;
+  --card-bg: #ffffff;
+  --card-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+  --card-shadow-hover: 0 4px 12px rgba(0,0,0,0.1);
+  --code-bg: #f1f3f5;
+  --hero-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  --hero-fg: #e8e8e8;
+  --hero-accent: #6fa8dc;
+  --pill-bg: rgba(255,255,255,0.12);
+  --pill-border: rgba(255,255,255,0.2);
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1e1e1e;
-    --fg: #ddd;
-    --fg-dim: #999;
+    --bg: #0d1117;
+    --bg-alt: #161b22;
+    --fg: #e6edf3;
+    --fg-dim: #9da5b4;
+    --fg-muted: #6e7681;
     --accent: #6fa8dc;
-    --border: #444;
-    --code-bg: #2a2a2a;
-    --card-bg: #252525;
+    --accent-light: #1c2333;
+    --border: #30363d;
+    --card-bg: #161b22;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    --card-shadow-hover: 0 4px 12px rgba(0,0,0,0.4);
+    --code-bg: #1c2128;
+    --hero-bg: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1c2333 100%);
+    --hero-fg: #e6edf3;
+    --hero-accent: #6fa8dc;
+    --pill-bg: rgba(255,255,255,0.08);
+    --pill-border: rgba(255,255,255,0.15);
   }
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
 body {
-  font-family: "Source Serif 4", "Noto Serif", Georgia, serif;
+  font-family: var(--sans);
   background: var(--bg);
   color: var(--fg);
   line-height: 1.6;
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 2rem 1.5rem;
 }
-h1, h2, h3 {
-  font-family: "Fira Sans", "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
-  font-weight: 600;
-}
-h1 { font-size: 2rem; margin-bottom: 0.25rem; }
-h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
-.subtitle { color: var(--fg-dim); font-size: 1.1rem; margin-bottom: 2rem; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+code { font-family: var(--mono); font-size: 0.9em; }
+.container { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* ── Hero ──────────────────────────────────────────────────────────── */
+.hero {
+  background: var(--hero-bg);
+  color: var(--hero-fg);
+  padding: 5rem 1.5rem 4rem;
+  text-align: center;
+}
+.hero h1 {
+  font-size: 3.5rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.75rem;
+}
+.hero .tagline {
+  font-size: 1.3rem;
+  color: var(--hero-accent);
+  margin-bottom: 2rem;
+  font-weight: 400;
+}
+.hero-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+}
+.hero-buttons a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.75rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 1rem;
+  text-decoration: none;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.hero-buttons a:hover { transform: translateY(-1px); text-decoration: none; }
+.btn-primary {
+  background: var(--hero-accent);
+  color: #0d1117;
+}
+.btn-secondary {
+  background: transparent;
+  color: var(--hero-fg);
+  border: 1px solid var(--pill-border);
+}
+.pills {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.pill {
+  display: inline-block;
+  padding: 0.35rem 1rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: var(--pill-bg);
+  border: 1px solid var(--pill-border);
+  color: var(--hero-fg);
+}
+
+/* ── Sections ──────────────────────────────────────────────────────── */
+section { padding: 4rem 0; }
+section:nth-child(even) { background: var(--bg-alt); }
+section h2 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 0.5rem;
+}
+section .section-sub {
+  text-align: center;
+  color: var(--fg-dim);
+  margin-bottom: 2.5rem;
+  font-size: 1.05rem;
+}
+
+/* ── Features Grid ─────────────────────────────────────────────────── */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+.feature-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.feature-card:hover {
+  box-shadow: var(--card-shadow-hover);
+  transform: translateY(-2px);
+}
+.feature-icon {
+  font-size: 1.5rem;
+  margin-bottom: 0.75rem;
+  display: block;
+  width: 2.5rem;
+  height: 2.5rem;
+  line-height: 2.5rem;
+  text-align: center;
+  border-radius: 8px;
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.feature-card h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+.feature-card p {
+  font-size: 0.9rem;
+  color: var(--fg-dim);
+  line-height: 1.5;
+}
+
+/* ── Demo ──────────────────────────────────────────────────────────── */
+.demo-frame {
+  max-width: 700px;
+  margin: 0 auto 1.5rem;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: var(--card-shadow);
+}
+.demo-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.demo-code {
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+/* ── Code Blocks ───────────────────────────────────────────────────── */
 pre {
   background: var(--code-bg);
-  padding: 1rem;
+  padding: 1.25rem 1.5rem;
   overflow-x: auto;
-  font-size: 0.78rem;
-  line-height: 1.35;
-  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  font-family: "Fira Code", "Source Code Pro", "Cascadia Code", monospace;
 }
-.crates {
+
+/* ── Quick Start ───────────────────────────────────────────────────── */
+.install-methods {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 700px;
+  margin: 0 auto;
+}
+.install-method h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: var(--fg);
+}
+
+/* ── Architecture ──────────────────────────────────────────────────── */
+.arch-block {
+  max-width: 800px;
+  margin: 0 auto;
+}
+.arch-block pre {
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+/* ── Crate Cards ───────────────────────────────────────────────────── */
+.crates-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 1rem;
 }
 .crate-card {
   background: var(--card-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 1.1rem 1.2rem;
+  border-radius: 8px;
+  padding: 1.2rem 1.3rem;
+  box-shadow: var(--card-shadow);
+  transition: box-shadow 0.2s;
 }
+.crate-card:hover { box-shadow: var(--card-shadow-hover); }
 .crate-card h3 {
-  font-size: 1.05rem;
-  margin-bottom: 0.35rem;
-  font-family: "Fira Code", "Source Code Pro", monospace;
-  font-weight: 500;
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
 }
-.crate-card p { font-size: 0.92rem; color: var(--fg-dim); }
-.links { margin-top: 2.5rem; font-size: 0.95rem; }
-.links a { margin-right: 1.5rem; }
-footer { margin-top: 3rem; font-size: 0.85rem; color: var(--fg-dim); border-top: 1px solid var(--border); padding-top: 1rem; }
+.crate-card h3 a { color: var(--accent); }
+.crate-card p {
+  font-size: 0.88rem;
+  color: var(--fg-dim);
+  line-height: 1.45;
+}
+
+/* ── Deployment Cards ──────────────────────────────────────────────── */
+.deploy-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+.deploy-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.2rem;
+  text-align: center;
+  box-shadow: var(--card-shadow);
+}
+.deploy-card .deploy-icon {
+  font-size: 1.8rem;
+  margin-bottom: 0.5rem;
+}
+.deploy-card h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.deploy-card p {
+  font-size: 0.82rem;
+  color: var(--fg-dim);
+}
+
+/* ── Footer ────────────────────────────────────────────────────────── */
+footer {
+  padding: 2rem 0;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+footer a { color: var(--fg-dim); }
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hero h1 { font-size: 2.5rem; }
+  .hero .tagline { font-size: 1.1rem; }
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+  .deploy-grid { grid-template-columns: repeat(2, 1fr); }
+  .arch-block pre { font-size: 0.6rem; }
+}
+@media (max-width: 480px) {
+  .hero { padding: 3rem 1rem 2.5rem; }
+  .hero h1 { font-size: 2rem; }
+  .features-grid { grid-template-columns: 1fr; }
+  .deploy-grid { grid-template-columns: 1fr; }
+  .crates-grid { grid-template-columns: 1fr; }
+  .hero-buttons { flex-direction: column; align-items: center; }
+}
 </style>
 </head>
 <body>
 
-<h1>Busted</h1>
-<p class="subtitle">eBPF-based LLM &amp; AI communication monitoring for Linux</p>
-
-<p>
-Busted uses eBPF probes to observe every network connection a process makes — including
-decrypted TLS payloads — and classifies traffic as LLM API calls, MCP tool invocations,
-or ordinary HTTP, with zero application changes.
-It combines content-based analysis (HTTP/JSON parsing of intercepted plaintext) with
-behavioral ML classification (traffic-pattern recognition when payloads are unavailable)
-to give security teams full visibility into AI-related communications.
-</p>
-
-<h2>Architecture</h2>
-
-<pre>
-┌──────────────────────────── Kernel Space (eBPF) ────────────────────────────┐
-│                                                                             │
-│  Kprobes                          Uprobes (OpenSSL)         LSM            │
-│  ┌─────────────┐                  ┌──────────────────┐   ┌──────────────┐  │
-│  │tcp_connect   │                  │ssl_ctrl_sni      │   │socket_connect│  │
-│  │tcp_sendmsg   │                  │ssl_write_entry   │   │  (enforce)   │  │
-│  │tcp_recvmsg   │                  │ssl_read_entry    │   └──────────────┘  │
-│  │tcp_close     │                  │ssl_read_ret      │                     │
-│  │udp_sendmsg   │                  │ssl_free_cleanup  │                     │
-│  └──────┬───────┘                  └────────┬─────────┘                     │
-│         │                                   │                               │
-│         └───────────┬───────────────────────┘                               │
-│                     │                                                       │
-│              ┌──────▼──────┐    ┌───────────────────┐                       │
-│              │  EVENTS     │    │ TLS_CONN_VERDICT   │◄── userspace writes  │
-│              │ (RingBuf    │    │ (HashMap)          │    verdict back      │
-│              │  512KB)     │    └───────────────────┘                       │
-│              └──────┬──────┘                                                │
-└─────────────────────┼──────────────────────────────────────────────────────┘
-                      │
-┌─────────────────────▼──────────────────────────────────────────────────────┐
-│                         Userspace Agent (Rust/Tokio)                        │
-│                                                                             │
-│  ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐   │
-│  │ Event Dispatch   │  │ TLS Analysis     │  │ Provider Classification │   │
-│  │ • NetworkEvent   │  │ • First-chunk    │  │ • DNS resolution        │   │
-│  │ • TlsHandshake   │  │   LLM/MCP detect │  │ • IP/subnet matching   │   │
-│  │ • TlsDataEvent   │  │ • Verdict→eBPF   │  │ • SNI classification   │   │
-│  └────────┬────────┘  └──────────────────┘  └──────────────────────────┘   │
-│           │                                                                 │
-│  ┌────────▼────────────────────────────────────────────────┐               │
-│  │              Broadcast Channel (tokio)                   │               │
-│  └──┬──────────┬──────────────┬─────────────┬──────────────┘               │
-│     │          │              │             │                               │
-│  ┌──▼──┐  ┌───▼────┐  ┌─────▼─────┐  ┌───▼──────┐                        │
-│  │ CLI │  │ Socket │  │   SIEM    │  │ ML       │                        │
-│  │ out │  │ server │  │ (webhook, │  │ classify │                        │
-│  └─────┘  └───┬────┘  │  file,    │  └──────────┘                        │
-│               │       │  syslog)  │                                       │
-│               │       └───────────┘                                       │
-└───────────────┼───────────────────────────────────────────────────────────┘
-                │
-        ┌───────▼───────┐
-        │  busted-ui    │
-        │  (egui native │
-        │   dashboard)  │
-        └───────────────┘
-</pre>
-
-<h2>Crate Documentation</h2>
-
-<div class="crates">
-  <div class="crate-card">
-    <h3><a href="busted_types/index.html">busted_types</a></h3>
-    <p>
-      The data contract between kernel and userspace.
-      Flat, <code>#[repr(C)]</code>, fixed-size types that travel through the eBPF
-      ring buffer with zero copies.
-    </p>
-  </div>
-  <div class="crate-card">
-    <h3><a href="busted_classifier/index.html">busted_classifier</a></h3>
-    <p>
-      Stateless content classification for decrypted TLS payloads.
-      Identifies LLM API calls, MCP JSON-RPC messages, SDK fingerprints,
-      and PII — in microseconds from a single buffer.
-    </p>
-  </div>
-  <div class="crate-card">
-    <h3><a href="busted_ml/index.html">busted_ml</a></h3>
-    <p>
-      Behavioral traffic classifier that identifies LLM API traffic from
-      network patterns alone — packet timing, sizes, bursts — when payload
-      inspection is unavailable.
-    </p>
-  </div>
-  <div class="crate-card">
-    <h3><a href="busted_opa/index.html">busted_opa</a></h3>
-    <p>
-      OPA/Rego policy engine for LLM communication governance.
-      Evaluates events against user-defined Rego policies and returns
-      allow, audit, or deny decisions with reasons.
-    </p>
-  </div>
-  <div class="crate-card">
-    <h3><a href="busted_ui/index.html">busted_ui</a></h3>
-    <p>
-      Native egui dashboard that connects to the agent over a Unix socket
-      and displays live classified events. Includes a demo mode for quick evaluation.
-    </p>
-  </div>
-  <div class="crate-card">
-    <h3><a href="busted_cli/index.html">busted_cli</a></h3>
-    <p>
-      Unified CLI binary combining the monitoring agent, policy management,
-      and UI dashboard. The canonical <code>cargo install</code> target.
-    </p>
+<!-- ── Hero ─────────────────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="container">
+    <h1>Busted</h1>
+    <p class="tagline">See what your AI agents are really saying</p>
+    <div class="hero-buttons">
+      <a href="https://github.com/barakber/busted" class="btn-primary">GitHub</a>
+      <a href="#quickstart" class="btn-secondary">Install</a>
+    </div>
+    <div class="pills">
+      <span class="pill">MIT License</span>
+      <span class="pill">Linux / eBPF</span>
+      <span class="pill">Pure Rust</span>
+    </div>
   </div>
 </div>
 
-<div class="links">
-  <a href="https://github.com/barakber/busted">GitHub Repository</a>
-</div>
+<!-- ── Features ─────────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <h2>Features</h2>
+    <p class="section-sub">Kernel-native observability and policy enforcement for LLM/AI traffic</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <span class="feature-icon">K</span>
+        <h3>Kernel-Native Monitoring</h3>
+        <p>eBPF kprobes, uprobes, and LSM hooks with minimal overhead. Events flow through a 512KB RingBuf with zero copies.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">T</span>
+        <h3>TLS Plaintext Capture</h3>
+        <p>Intercepts decrypted data from OpenSSL SSL_write/SSL_read. See actual LLM prompts and responses in cleartext.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">L</span>
+        <h3>LLM/MCP Protocol Detection</h3>
+        <p>Identifies API calls to 15+ LLM providers and MCP JSON-RPC tool invocations using content analysis and SNI matching.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">P</span>
+        <h3>OPA Policy Enforcement</h3>
+        <p>Evaluate events against Rego policies for allow, audit, or deny decisions. Kernel-level enforcement via LSM + SIGKILL.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">I</span>
+        <h3>Agent Identity Tracking</h3>
+        <p>Correlates weak per-event signals into stable agent identities. Builds action timelines and narrative descriptions.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon">M</span>
+        <h3>ML Behavioral Classification</h3>
+        <p>Decision trees and HDBSCAN clustering detect LLM traffic patterns from network behavior alone when payloads are unavailable.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
+<!-- ── Demo ─────────────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <h2>Demo</h2>
+    <p class="section-sub">Real-time policy enforcement blocking AI agent traffic</p>
+    <div class="demo-frame">
+      <img src="busted.gif" alt="Busted policy enforcement demo" loading="lazy">
+    </div>
+    <div class="demo-code">
+      <pre>sudo busted monitor --enforce --rule '
+  package busted
+  default decision = "allow"
+  decision = "deny" {
+      input.llm_provider == "Anthropic"
+      contains(input.tls_payload, "berko")
+  }'</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── Quick Start ──────────────────────────────────────────────────── -->
+<section id="quickstart">
+  <div class="container">
+    <h2>Quick Start</h2>
+    <p class="section-sub">Three ways to get running</p>
+    <div class="install-methods">
+      <div class="install-method">
+        <h3>APT (Debian/Ubuntu)</h3>
+        <pre>echo "deb [trusted=yes] https://barakber.github.io/busted/repos/apt ./" \
+  | sudo tee /etc/apt/sources.list.d/busted.list
+sudo apt-get update &amp;&amp; sudo apt-get install busted
+sudo busted monitor</pre>
+      </div>
+      <div class="install-method">
+        <h3>From Source</h3>
+        <pre>rustup toolchain install nightly --component rust-src
+cargo install bpf-linker
+git clone https://github.com/barakber/busted &amp;&amp; cd busted
+cargo xtask build --features tls
+sudo ./target/debug/busted monitor --verbose</pre>
+      </div>
+      <div class="install-method">
+        <h3>Docker</h3>
+        <pre>docker build -f deploy/Dockerfile -t busted:latest .
+docker run --privileged --pid=host -v /sys:/sys:ro busted:latest</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Architecture ─────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <h2>Architecture</h2>
+    <p class="section-sub">eBPF in the kernel, Rust in userspace</p>
+    <div class="arch-block">
+      <pre>
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500; Kernel Space (eBPF) &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;                                                                             &#x2502;
+&#x2502;  Kprobes                          Uprobes (OpenSSL)         LSM            &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;                  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;   &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x2502;
+&#x2502;  &#x2502;tcp_connect   &#x2502;                  &#x2502;ssl_ctrl_sni      &#x2502;   &#x2502;socket_connect&#x2502;  &#x2502;
+&#x2502;  &#x2502;tcp_sendmsg   &#x2502;                  &#x2502;ssl_write_entry   &#x2502;   &#x2502;  (enforce)   &#x2502;  &#x2502;
+&#x2502;  &#x2502;tcp_recvmsg   &#x2502;                  &#x2502;ssl_read_entry    &#x2502;   &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2502;
+&#x2502;  &#x2502;tcp_close     &#x2502;                  &#x2502;ssl_read_ret      &#x2502;                     &#x2502;
+&#x2502;  &#x2502;udp_sendmsg   &#x2502;                  &#x2502;ssl_free_cleanup  &#x2502;                     &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                     &#x2502;
+&#x2502;         &#x2502;                                   &#x2502;                               &#x2502;
+&#x2502;         &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                               &#x2502;
+&#x2502;                     &#x2502;                                                       &#x2502;
+&#x2502;              &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;                       &#x2502;
+&#x2502;              &#x2502;  EVENTS     &#x2502;    &#x2502; TLS_CONN_VERDICT   &#x2502;&#x25C4;&#x2500;&#x2500; userspace writes  &#x2502;
+&#x2502;              &#x2502; (RingBuf    &#x2502;    &#x2502; (HashMap)          &#x2502;    verdict back      &#x2502;
+&#x2502;              &#x2502;  512KB)     &#x2502;    &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                       &#x2502;
+&#x2502;              &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                                                &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2524;                &#x2502;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+                      &#x2502;
+&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;                         Userspace Agent (Rust/Tokio)                        &#x2502;
+&#x2502;                                                                             &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;   &#x2502;
+&#x2502;  &#x2502; Event Dispatch   &#x2502;  &#x2502; TLS Analysis     &#x2502;  &#x2502; Provider Classification &#x2502;   &#x2502;
+&#x2502;  &#x2502; &#x2022; NetworkEvent   &#x2502;  &#x2502; &#x2022; First-chunk    &#x2502;  &#x2502; &#x2022; DNS resolution        &#x2502;   &#x2502;
+&#x2502;  &#x2502; &#x2022; TlsHandshake   &#x2502;  &#x2502;   LLM/MCP detect &#x2502;  &#x2502; &#x2022; IP/subnet matching   &#x2502;   &#x2502;
+&#x2502;  &#x2502; &#x2022; TlsDataEvent   &#x2502;  &#x2502; &#x2022; Verdict&#x2192;eBPF   &#x2502;  &#x2502; &#x2022; SNI classification   &#x2502;   &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;   &#x2502;
+&#x2502;           &#x2502;                                                                 &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;               &#x2502;
+&#x2502;  &#x2502;              Broadcast Channel (tokio)                   &#x2502;               &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;               &#x2502;
+&#x2502;     &#x2502;          &#x2502;              &#x2502;             &#x2502;                               &#x2502;
+&#x2502;  &#x250C;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2510;  &#x250C;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  &#x250C;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;                        &#x2502;
+&#x2502;  &#x2502; CLI &#x2502;  &#x2502; Socket &#x2502;  &#x2502;   SIEM    &#x2502;  &#x2502; ML       &#x2502;                        &#x2502;
+&#x2502;  &#x2502; out &#x2502;  &#x2502; server &#x2502;  &#x2502; (webhook, &#x2502;  &#x2502; classify &#x2502;                        &#x2502;
+&#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2514;&#x2500;&#x2500;&#x2500;&#x252C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;  &#x2502;  file,    &#x2502;  &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                        &#x2502;
+&#x2502;               &#x2502;       &#x2502;  syslog)  &#x2502;                                       &#x2502;
+&#x2502;               &#x2502;       &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;                                       &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2524;                &#x2502;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+                &#x2502;
+        &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x25BC;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+        &#x2502;  busted-ui    &#x2502;
+        &#x2502;  (egui native &#x2502;
+        &#x2502;   dashboard)  &#x2502;
+        &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── Crate Documentation ──────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <h2>Crate Documentation</h2>
+    <p class="section-sub">Rustdoc for every crate in the workspace</p>
+    <div class="crates-grid">
+      <div class="crate-card">
+        <h3><a href="busted_types/index.html">busted_types</a></h3>
+        <p>The data contract between kernel and userspace. Flat, <code>#[repr(C)]</code>, fixed-size types that travel through the eBPF ring buffer with zero copies.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_classifier/index.html">busted_classifier</a></h3>
+        <p>Stateless content classification for decrypted TLS payloads. Identifies LLM API calls, MCP JSON-RPC messages, SDK fingerprints, and PII.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_identity/index.html">busted_identity</a></h3>
+        <p>Cross-event AI agent identity resolution. Correlates weak signals (PID, SDK, model, fingerprint) into stable identities with action timelines.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_ml/index.html">busted_ml</a></h3>
+        <p>Behavioral traffic classifier that identifies LLM API traffic from network patterns alone — packet timing, sizes, bursts — when payload inspection is unavailable.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_opa/index.html">busted_opa</a></h3>
+        <p>OPA/Rego policy engine for LLM communication governance. Evaluates events against user-defined Rego policies and returns allow, audit, or deny decisions.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_agent/index.html">busted_agent</a></h3>
+        <p>Userspace eBPF monitoring agent. Loads kernel probes, consumes events, classifies traffic, evaluates policies, and broadcasts to CLI/UI/SIEM.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_ui/index.html">busted_ui</a></h3>
+        <p>Native egui dashboard that connects to the agent over a Unix socket and displays live classified events with provider stats and identity columns.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted/index.html">busted</a> (CLI)</h3>
+        <p>Unified CLI binary: <code>busted monitor</code>, <code>busted policy {check,eval,test}</code>, <code>busted ui</code>. The canonical <code>cargo install</code> target.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="busted_types/index.html">busted_ebpf</a></h3>
+        <p>eBPF kernel programs: kprobes for TCP/UDP, uprobes for OpenSSL, LSM hooks for policy enforcement. Built for <code>bpfel-unknown-none</code>.</p>
+      </div>
+      <div class="crate-card">
+        <h3><a href="xtask/index.html">xtask</a></h3>
+        <p>Build automation: <code>cargo xtask build</code> compiles eBPF programs and the full workspace. Also handles version bumps and consistency checks.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Deployment ───────────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <h2>Deployment</h2>
+    <p class="section-sub">Run anywhere Linux runs</p>
+    <div class="deploy-grid">
+      <div class="deploy-card">
+        <div class="deploy-icon">&#x2388;</div>
+        <h3>Helm</h3>
+        <p>DaemonSet with privileged eBPF, ConfigMap for OPA policies, ServiceMonitor for Prometheus</p>
+      </div>
+      <div class="deploy-card">
+        <div class="deploy-icon">&#x25A0;</div>
+        <h3>Docker</h3>
+        <p>Multi-stage build, privileged container with host PID namespace access</p>
+      </div>
+      <div class="deploy-card">
+        <div class="deploy-icon">&#x2699;</div>
+        <h3>systemd</h3>
+        <p>Service unit with automatic restart, syslog integration, configurable features</p>
+      </div>
+      <div class="deploy-card">
+        <div class="deploy-icon">&#x25BC;</div>
+        <h3>Packages</h3>
+        <p>.deb, .rpm, .apk packages for amd64 and arm64 via APT/YUM/APK repos</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ──────────────────────────────────────────────────────── -->
 <footer>
-  Generated by the Busted docs workflow. Crate documentation is built with <code>cargo doc</code>.
+  <div class="container">
+    <p>
+      <a href="https://github.com/barakber/busted">GitHub</a> &middot;
+      MIT License &middot;
+      Built with Rust and eBPF
+    </p>
+  </div>
 </footer>
 
 </body>
