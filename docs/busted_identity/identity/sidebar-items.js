@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["compute_identity_id"],"struct":["IdentityMatch","InstanceKey","ResolvedIdentity","TypeKey"],"type":["IdentityId"]};

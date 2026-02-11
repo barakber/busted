@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["show"]};
+window.SIDEBAR_ITEMS = {"fn":["show","show_detail_panel"]};
