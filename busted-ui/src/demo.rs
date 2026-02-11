@@ -13,6 +13,13 @@ struct Scenario {
     dst_port: u16,
     mcp_method: Option<&'static str>,
     mcp_category: Option<&'static str>,
+    user_message: Option<&'static str>,
+    system_prompt: Option<&'static str>,
+    stream: bool,
+    pii: bool,
+    policy: &'static str,
+    identity_narrative: Option<&'static str>,
+    identity_timeline: Option<&'static str>,
 }
 
 const SCENARIOS: &[Scenario] = &[
@@ -27,6 +34,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Analyze the quarterly revenue data and identify the top 3 growth drivers compared to last quarter. Focus on the SaaS segment."),
+        system_prompt: Some("You are a financial analyst specializing in SaaS metrics. Always cite specific numbers."),
+        stream: true,
+        pii: false,
+        policy: "audit",
+        identity_narrative: Some("Financial analysis assistant processing quarterly reports"),
+        identity_timeline: Some("09:00 init -> 09:01 load_data -> 14:23 analyze_revenue"),
     },
     Scenario {
         process_name: "node",
@@ -39,6 +53,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Review the pull request diff and suggest improvements. Pay attention to error handling and edge cases in the auth middleware."),
+        system_prompt: Some("You are a senior software engineer conducting code reviews. Be constructive and specific."),
+        stream: false,
+        pii: false,
+        policy: "allow",
+        identity_narrative: Some("Code review bot integrated with GitHub CI pipeline"),
+        identity_timeline: Some("PR #482 opened -> webhook -> review_request"),
     },
     Scenario {
         process_name: "python3",
@@ -50,7 +71,14 @@ const SCENARIOS: &[Scenario] = &[
         dst_ip: "127.0.0.1",
         dst_port: 3000,
         mcp_method: Some("tools/call"),
-        mcp_category: Some("tool_use"),
+        mcp_category: Some("Tools"),
+        user_message: None,
+        system_prompt: None,
+        stream: false,
+        pii: false,
+        policy: "audit",
+        identity_narrative: Some("MCP tool orchestrator invoking local tools"),
+        identity_timeline: Some("tools/list -> tools/call:search -> tools/call:summarize"),
     },
     Scenario {
         process_name: "curl",
@@ -63,6 +91,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 11434,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Translate the following error log from Japanese to English and summarize the root cause."),
+        system_prompt: None,
+        stream: false,
+        pii: false,
+        policy: "allow",
+        identity_narrative: None,
+        identity_timeline: None,
     },
     Scenario {
         process_name: "java",
@@ -75,6 +110,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Generate a JIRA ticket description for the payment processing timeout bug affecting checkout in EU regions."),
+        system_prompt: Some("You are a project management assistant. Write clear, actionable ticket descriptions."),
+        stream: true,
+        pii: false,
+        policy: "audit",
+        identity_narrative: Some("Enterprise ticketing integration via Azure OpenAI"),
+        identity_timeline: Some("alert_trigger -> triage -> generate_ticket"),
     },
     Scenario {
         process_name: "python3",
@@ -87,6 +129,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Classify the sentiment of these 50 customer support tickets and group them by urgency level."),
+        system_prompt: Some("You are a customer support analyst. Classify tickets as positive/neutral/negative and urgency as low/medium/high/critical."),
+        stream: false,
+        pii: false,
+        policy: "allow",
+        identity_narrative: Some("Batch sentiment classifier for support queue"),
+        identity_timeline: Some("fetch_tickets -> classify_batch -> write_results"),
     },
     Scenario {
         process_name: "node",
@@ -99,6 +148,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: Some("Write a Python script to parse CSV files and generate a summary report with statistics."),
+        system_prompt: None,
+        stream: true,
+        pii: false,
+        policy: "audit",
+        identity_narrative: None,
+        identity_timeline: None,
     },
     Scenario {
         process_name: "python3",
@@ -111,6 +167,32 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
+        user_message: None,
+        system_prompt: None,
+        stream: false,
+        pii: false,
+        policy: "allow",
+        identity_narrative: Some("Embedding pipeline for document search index"),
+        identity_timeline: Some("load_docs -> chunk -> embed -> store_vectors"),
+    },
+    Scenario {
+        process_name: "node",
+        pid: 8901,
+        provider: "OpenAI",
+        model: Some("gpt-4o"),
+        sdk: Some("openai-node/4.52.0"),
+        sni: "api.openai.com",
+        dst_ip: "104.18.7.192",
+        dst_port: 443,
+        mcp_method: None,
+        mcp_category: None,
+        user_message: Some("Here is John Smith's SSN 123-45-6789 and his medical records from Dr. Wilson. Please summarize his health history."),
+        system_prompt: Some("You are a medical records assistant."),
+        stream: false,
+        pii: true,
+        policy: "deny",
+        identity_narrative: Some("Unauthorized medical data pipeline leaking PII"),
+        identity_timeline: Some("scrape_records -> extract_pii -> send_to_llm"),
     },
 ];
 
@@ -128,6 +210,7 @@ fn now_timestamp() -> String {
 
 fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEvent {
     let is_tls = event_type.starts_with("TLS_DATA_");
+    let is_write = event_type == "TLS_DATA_WRITE";
     ProcessedEvent {
         event_type: event_type.to_string(),
         timestamp: now_timestamp(),
@@ -140,7 +223,7 @@ fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEve
         dst_port: scenario.dst_port,
         bytes,
         provider: Some(scenario.provider.to_string()),
-        policy: Some("audit".to_string()),
+        policy: Some(scenario.policy.to_string()),
         container_id: String::new(),
         cgroup_id: 0,
         request_rate: Some(2.5),
@@ -183,11 +266,39 @@ fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEve
         agent_sdk: scenario.sdk.map(|s| s.to_string()),
         agent_fingerprint: Some(0xdeadbeef),
         classifier_confidence: if is_tls { Some(0.95) } else { None },
-        pii_detected: if is_tls { Some(false) } else { None },
-        llm_user_message: None,
-        llm_system_prompt: None,
+        pii_detected: if is_tls { Some(scenario.pii) } else { None },
+        llm_user_message: if is_write {
+            scenario.user_message.map(|s| s.to_string())
+        } else {
+            None
+        },
+        llm_system_prompt: if is_write {
+            scenario.system_prompt.map(|s| s.to_string())
+        } else {
+            None
+        },
         llm_messages_json: None,
-        llm_stream: None,
+        llm_stream: if is_tls { Some(scenario.stream) } else { None },
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: if is_tls {
+            scenario.identity_narrative.map(|s| s.to_string())
+        } else {
+            None
+        },
+        identity_timeline: if is_tls {
+            scenario.identity_timeline.map(|s| s.to_string())
+        } else {
+            None
+        },
+        identity_timeline_len: if is_tls {
+            scenario.identity_timeline.map(|s| s.split(" -> ").count())
+        } else {
+            None
+        },
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     }
 }
 

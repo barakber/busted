@@ -37,10 +37,12 @@ pub struct BustedApp {
     pub demo_mode: bool,
     pub filter_provider: String,
     pub filter_process: String,
-    pub filter_event_type: String,
+    pub filter_action: String,
+    pub show_network_events: bool,
     pub provider_stats: HashMap<String, ProviderStats>,
     pub process_info: HashMap<u32, ProcessInfo>,
     pub auto_scroll: bool,
+    pub selected_event_idx: Option<usize>,
     // Policy editor state
     pub policy_rules: Vec<PolicyRule>,
     pub new_rule_pattern: String,
@@ -65,10 +67,12 @@ impl BustedApp {
             demo_mode,
             filter_provider: String::new(),
             filter_process: String::new(),
-            filter_event_type: String::new(),
+            filter_action: String::new(),
+            show_network_events: false,
             provider_stats: HashMap::new(),
             process_info: HashMap::new(),
             auto_scroll: true,
+            selected_event_idx: None,
             policy_rules: Vec::new(),
             new_rule_pattern: String::new(),
             new_rule_action: "audit".to_string(),
@@ -122,6 +126,14 @@ impl BustedApp {
         }
         // Cap stored events
         if self.events.len() > 10_000 {
+            // Adjust selected_event_idx when draining
+            if let Some(idx) = self.selected_event_idx {
+                if idx < 5_000 {
+                    self.selected_event_idx = None;
+                } else {
+                    self.selected_event_idx = Some(idx - 5_000);
+                }
+            }
             self.events.drain(0..5_000);
         }
     }
@@ -169,6 +181,22 @@ impl eframe::App for BustedApp {
                 ui.selectable_value(&mut self.tab, Tab::Policy, "Policy");
             });
         });
+
+        // Detail panel (bottom) — only when Live Events tab and an event is selected
+        if self.tab == Tab::LiveEvents {
+            if let Some(sel_idx) = self.selected_event_idx {
+                if sel_idx < self.events.len() {
+                    egui::TopBottomPanel::bottom("detail_panel")
+                        .resizable(true)
+                        .min_height(120.0)
+                        .default_height(250.0)
+                        .show(ctx, |ui| {
+                            let event = &self.events[sel_idx];
+                            views::events::show_detail_panel(ui, event);
+                        });
+                }
+            }
+        }
 
         // Main content
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
