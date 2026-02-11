@@ -18,6 +18,8 @@ use aya::{
     Btf, Ebpf,
 };
 use aya_log::EbpfLogger;
+#[cfg(feature = "identity")]
+use busted_identity as identity;
 #[cfg(feature = "ml")]
 use busted_ml as ml;
 use busted_types::processed::ProcessedEvent;
@@ -306,6 +308,22 @@ struct EventOutput {
     llm_messages_json: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     llm_stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_instance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_narrative: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_timeline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_timeline_len: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_sdk_hash: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_model_hash: Option<u32>,
 }
 
 impl From<&ProcessedEvent> for EventOutput {
@@ -352,6 +370,14 @@ impl From<&ProcessedEvent> for EventOutput {
             llm_system_prompt: e.llm_system_prompt.clone(),
             llm_messages_json: e.llm_messages_json.clone(),
             llm_stream: e.llm_stream,
+            identity_id: e.identity_id,
+            identity_instance: e.identity_instance.clone(),
+            identity_confidence: e.identity_confidence,
+            identity_narrative: e.identity_narrative.clone(),
+            identity_timeline: e.identity_timeline.clone(),
+            identity_timeline_len: e.identity_timeline_len,
+            agent_sdk_hash: e.agent_sdk_hash,
+            agent_model_hash: e.agent_model_hash,
         }
     }
 }
@@ -371,6 +397,7 @@ async fn handle_event(
     container_cache: &mut HashMap<u32, String>,
     pid_stats: &mut HashMap<u32, PidStats>,
     #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
+    #[cfg(feature = "identity")] identity_tracker: &mut identity::IdentityTracker,
     #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
     #[cfg(feature = "tls")] sni_cache: &tls::SniCache,
     #[cfg(feature = "opa")] opa_engine: &mut Option<busted_opa::PolicyEngine>,
@@ -400,6 +427,18 @@ async fn handle_event(
     #[cfg(not(feature = "tls"))]
     let provider = classify_llm_provider(&dst_ip, event.dport, &pmap);
     drop(pmap);
+
+    // Log TLS-port connections at debug level for diagnostics
+    if event.dport == 443 {
+        debug!(
+            "TLS conn: PID {} ({}) -> {}:{} provider={:?}",
+            event.pid,
+            event.process_name(),
+            dst_ip,
+            event.dport,
+            provider,
+        );
+    }
 
     let policy_str = if provider.is_some() && enforce {
         if let Ok(mut pmap) = policy_map.try_lock() {
@@ -504,6 +543,10 @@ async fn handle_event(
         }
     }
 
+    // Identity tracking (after ML, before OPA so policies can see identity fields)
+    #[cfg(feature = "identity")]
+    enrich_with_identity(&mut processed, identity_tracker);
+
     // OPA policy evaluation (overrides hardcoded policy if enabled)
     #[cfg(feature = "opa")]
     if let Some(ref mut engine) = opa_engine {
@@ -575,11 +618,28 @@ async fn handle_event(
     }
 }
 
+/// Enrich a ProcessedEvent with identity tracking fields.
+#[cfg(feature = "identity")]
+fn enrich_with_identity(processed: &mut ProcessedEvent, tracker: &mut identity::IdentityTracker) {
+    if let Some(id_match) = tracker.observe(processed) {
+        processed.identity_id = Some(id_match.identity_id);
+        processed.identity_instance = Some(id_match.instance_id.to_string());
+        processed.identity_confidence = Some(id_match.confidence);
+        processed.identity_narrative = Some(id_match.narrative);
+        processed.identity_timeline = Some(id_match.timeline_summary);
+        processed.identity_timeline_len = Some(id_match.timeline_len);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI output consumer
 // ---------------------------------------------------------------------------
 
-async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format: String) {
+async fn cli_output_consumer(
+    mut rx: broadcast::Receiver<ProcessedEvent>,
+    format: String,
+    verbose: bool,
+) {
     loop {
         match rx.recv().await {
             Ok(event) => match format.as_str() {
@@ -589,8 +649,8 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                         println!("{}", json);
                     }
                 }
-                _ => {
-                    // TLS data events: show decrypted payload
+                "verbose" => {
+                    // Legacy raw format
                     if event.event_type.starts_with("TLS_DATA_") {
                         if let Some(ref payload) = event.tls_payload {
                             info!(
@@ -632,6 +692,140 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
                         );
                     }
                 }
+                _ => {
+                    // Default "text" format — high-level action view
+                    if !event.event_type.starts_with("TLS_DATA_") {
+                        // Non-TLS events: show compact one-liner only when verbose
+                        if verbose {
+                            let ts = if event.timestamp.len() > 8 {
+                                &event.timestamp[..8]
+                            } else {
+                                &event.timestamp
+                            };
+                            println!(
+                                "{} {} ({}) [{}] {}:{} -> {}:{} {} bytes",
+                                ts,
+                                event.process_name,
+                                event.pid,
+                                event.event_type,
+                                event.src_ip,
+                                event.src_port,
+                                event.dst_ip,
+                                event.dst_port,
+                                event.bytes,
+                            );
+                        }
+                        continue;
+                    }
+
+                    // TLS events: action-focused output
+                    let ts = if event.timestamp.len() > 8 {
+                        &event.timestamp[..8]
+                    } else {
+                        &event.timestamp
+                    };
+
+                    let direction = if event.event_type == "TLS_DATA_WRITE" {
+                        ">>>"
+                    } else {
+                        "<<<"
+                    };
+
+                    // Build action string: "Provider Model Endpoint" or "MCP method (category)"
+                    let action = if let Some(ref mcp) = event.mcp_method {
+                        let cat = event
+                            .mcp_category
+                            .as_deref()
+                            .map(|c| format!(" ({})", c))
+                            .unwrap_or_default();
+                        format!("MCP {}{}", mcp, cat)
+                    } else {
+                        let provider = event
+                            .llm_provider
+                            .as_deref()
+                            .or(event.provider.as_deref())
+                            .unwrap_or("unknown");
+                        let model = event.llm_model.as_deref().unwrap_or("");
+                        let endpoint = event
+                            .llm_endpoint
+                            .as_deref()
+                            .and_then(|ep| ep.rsplit('/').next())
+                            .unwrap_or("");
+                        let mut parts = vec![provider.to_string()];
+                        if !model.is_empty() {
+                            parts.push(model.to_string());
+                        }
+                        if !endpoint.is_empty() {
+                            parts.push(endpoint.to_string());
+                        }
+                        parts.join(" ")
+                    };
+
+                    // Build indicator brackets
+                    let mut indicators = Vec::new();
+                    if let Some(ref sdk) = event.agent_sdk {
+                        indicators.push(format!("sdk:{}", sdk));
+                    }
+                    if event.llm_stream == Some(true) {
+                        indicators.push("stream".to_string());
+                    }
+                    if event.pii_detected == Some(true) {
+                        indicators.push("PII!".to_string());
+                    }
+                    if let Some(ref policy) = event.policy {
+                        if policy != "allow" {
+                            indicators.push(format!("policy:{}", policy));
+                        }
+                    }
+                    let indicator_str = if indicators.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", indicators.join(" | "))
+                    };
+
+                    // For responses, show size
+                    let size_str = if event.event_type == "TLS_DATA_READ" {
+                        format!(" ({})", format_human_bytes(event.bytes))
+                    } else {
+                        String::new()
+                    };
+
+                    println!(
+                        "{} {} ({}) {} {}{}{}",
+                        ts,
+                        event.process_name,
+                        event.pid,
+                        direction,
+                        action,
+                        size_str,
+                        indicator_str,
+                    );
+
+                    // Content lines (indented) — only for requests
+                    if event.event_type == "TLS_DATA_WRITE" {
+                        if let Some(ref msg) = event.llm_user_message {
+                            let display = if verbose {
+                                msg.clone()
+                            } else {
+                                truncate_at_char(msg, 120)
+                            };
+                            println!("  user: {}", display);
+                        }
+                        if let Some(ref prompt) = event.llm_system_prompt {
+                            let display = if verbose {
+                                prompt.clone()
+                            } else {
+                                truncate_at_char(prompt, 120)
+                            };
+                            println!("  system: {}", display);
+                        }
+                        if verbose {
+                            if let Some(ref narrative) = event.identity_narrative {
+                                println!("  identity: {}", narrative);
+                            }
+                        }
+                    }
+                }
             },
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("CLI consumer lagged, dropped {} events", n);
@@ -641,12 +835,35 @@ async fn cli_output_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, format
     }
 }
 
+/// Truncate a string at a UTF-8 character boundary.
+fn truncate_at_char(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((idx, _)) => format!("{}...", &s[..idx]),
+        None => s.to_string(),
+    }
+}
+
+/// Format bytes in human-readable form.
+fn format_human_bytes(b: u64) -> String {
+    if b < 1024 {
+        format!("{} B", b)
+    } else if b < 1024 * 1024 {
+        format!("{:.1} KB", b as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main agent entry point
 // ---------------------------------------------------------------------------
 
 /// Run the eBPF monitoring agent with the given configuration.
 pub async fn run_agent(config: AgentConfig) -> Result<()> {
+    // Install rustls CryptoProvider before any TLS operations (needed by kube-rs)
+    #[cfg(feature = "k8s")]
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Initialize Prometheus metrics exporter
     #[cfg(feature = "prometheus")]
     metrics::init(config.metrics_port)?;
@@ -895,7 +1112,8 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     // Start CLI output consumer
     let cli_rx = tx.subscribe();
     let format = config.format.clone();
-    task::spawn(cli_output_consumer(cli_rx, format));
+    let verbose = config.verbose;
+    task::spawn(cli_output_consumer(cli_rx, format, verbose));
 
     // Start Unix socket server for UI
     let server_rx = tx.subscribe();
@@ -935,6 +1153,12 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
         let mut async_fd = async_fd;
         #[cfg(feature = "opa")]
         let mut opa_engine = opa_engine;
+        #[cfg(feature = "identity")]
+        let mut identity_tracker = identity::IdentityTracker::new();
+        #[cfg(feature = "identity")]
+        let mut identity_last_gc = Instant::now();
+        #[cfg(feature = "identity")]
+        info!("Identity tracker initialized");
         #[cfg(feature = "ml")]
         let mut ml_classifier = ml::MlClassifier::new();
         #[cfg(feature = "ml")]
@@ -1082,6 +1306,9 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                             }
                         }
 
+                        #[cfg(feature = "identity")]
+                        enrich_with_identity(&mut processed, &mut identity_tracker);
+
                         #[cfg(feature = "opa")]
                         if let Some(ref mut engine) = opa_engine {
                             let opa_start = Instant::now();
@@ -1207,6 +1434,9 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                 }
                             }
 
+                            #[cfg(feature = "identity")]
+                            enrich_with_identity(&mut processed, &mut identity_tracker);
+
                             #[cfg(feature = "opa")]
                             if let Some(ref mut engine) = opa_engine {
                                 let opa_start = Instant::now();
@@ -1286,8 +1516,10 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                 }
 
                 // TlsHandshakeEvent: event_type 6
+                // Use exact size match to avoid confusion with NetworkEvent
+                // (whose first byte is PID's low byte, which could be 6).
                 #[cfg(feature = "tls")]
-                if item_len >= std::mem::size_of::<TlsHandshakeEvent>()
+                if item_len == std::mem::size_of::<TlsHandshakeEvent>()
                     && !item.is_empty()
                     && item[0] == 6
                 {
@@ -1321,6 +1553,8 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                         &mut pid_stats,
                         #[cfg(feature = "k8s")]
                         &k8s_cache_clone,
+                        #[cfg(feature = "identity")]
+                        &mut identity_tracker,
                         #[cfg(feature = "ml")]
                         &mut ml_classifier,
                         #[cfg(feature = "tls")]
@@ -1336,6 +1570,13 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                 }
             }
             guard.clear_ready();
+
+            // Periodic identity tracker garbage collection
+            #[cfg(feature = "identity")]
+            if identity_last_gc.elapsed() >= Duration::from_secs(60) {
+                identity_tracker.gc();
+                identity_last_gc = Instant::now();
+            }
 
             // Periodic ML idle PID garbage collection
             #[cfg(feature = "ml")]

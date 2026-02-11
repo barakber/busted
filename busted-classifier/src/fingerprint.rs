@@ -34,6 +34,10 @@ pub struct AgentFingerprint {
     pub model_params: ModelParams,
     /// FNV-1a hash of request structure for behavioral grouping.
     pub signature_hash: u64,
+    /// FNV-1a 32-bit hash of the SDK name (for compact identity keys).
+    pub sdk_hash: u32,
+    /// FNV-1a 32-bit hash of the model name (for compact identity keys).
+    pub model_hash: u32,
 }
 
 /// Known SDK patterns in User-Agent strings: (substring, sdk_name).
@@ -149,12 +153,37 @@ pub fn build_fingerprint(req: &HttpRequestInfo, json: &JsonFields) -> AgentFinge
 
     let signature_hash = compute_signature_hash(req, json);
 
+    let sdk_hash = sdk
+        .as_ref()
+        .map(|s| fnv1a_32(s.name.as_bytes()))
+        .unwrap_or(0);
+    let model_hash = model_params
+        .model
+        .as_ref()
+        .map(|m| fnv1a_32(m.as_bytes()))
+        .unwrap_or(0);
+
     AgentFingerprint {
         sdk,
         api_version,
         model_params,
         signature_hash,
+        sdk_hash,
+        model_hash,
     }
+}
+
+/// FNV-1a 32-bit hash for compact identity keys.
+///
+/// Used by `busted-identity` to build heap-free `TypeKey` and `InstanceKey` values
+/// from SDK names and model strings.
+pub fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for &b in bytes {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h
 }
 
 /// FNV-1a 64-bit hasher.
@@ -240,5 +269,52 @@ mod tests {
         let req2 = http::parse_request(raw2).unwrap();
         let h3 = compute_signature_hash(&req2, &jf);
         assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn test_fnv1a_32_deterministic() {
+        let h1 = fnv1a_32(b"openai-python");
+        let h2 = fnv1a_32(b"openai-python");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_fnv1a_32_distinct() {
+        let h1 = fnv1a_32(b"openai-python");
+        let h2 = fnv1a_32(b"anthropic-typescript");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_fingerprint_sdk_hash_populated() {
+        use crate::http;
+        use crate::json;
+
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nUser-Agent: openai-python/1.12.0\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let fp = build_fingerprint(&req, &jf);
+
+        assert_eq!(fp.sdk_hash, fnv1a_32(b"openai-python"));
+        assert_eq!(fp.model_hash, fnv1a_32(b"gpt-4"));
+        assert_ne!(fp.sdk_hash, 0);
+        assert_ne!(fp.model_hash, 0);
+    }
+
+    #[test]
+    fn test_fingerprint_no_sdk_hash_zero() {
+        use crate::http;
+        use crate::json;
+
+        // No User-Agent → no SDK → sdk_hash = 0
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let fp = build_fingerprint(&req, &jf);
+
+        assert_eq!(fp.sdk_hash, 0);
+        assert_eq!(fp.model_hash, 0);
     }
 }

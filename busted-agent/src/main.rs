@@ -9,7 +9,7 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Output format (json, text)
+    /// Output format: "text" (default, high-level actions), "verbose" (raw network logs), "json" (full structured JSON)
     #[arg(short, long, default_value = "text")]
     format: String,
 

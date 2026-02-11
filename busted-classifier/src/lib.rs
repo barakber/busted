@@ -102,7 +102,7 @@ use llm::{LlmApiInfo, LlmStreamInfo};
 use mcp::McpInfo;
 use pii::PiiFlags;
 
-pub use fingerprint::{ModelParams, SdkInfo};
+pub use fingerprint::{fnv1a_32, ModelParams, SdkInfo};
 pub use mcp::{McpCategory, McpMsgType};
 
 /// Direction of TLS data flow.
@@ -481,6 +481,22 @@ impl Classification {
     pub fn signature_hash(&self) -> Option<u64> {
         self.fingerprint.as_ref().map(|fp| fp.signature_hash)
     }
+
+    /// FNV-1a 32-bit hash of the SDK name, if fingerprinted.
+    pub fn sdk_hash(&self) -> Option<u32> {
+        self.fingerprint
+            .as_ref()
+            .map(|fp| fp.sdk_hash)
+            .filter(|&h| h != 0)
+    }
+
+    /// FNV-1a 32-bit hash of the model name, if fingerprinted.
+    pub fn model_hash(&self) -> Option<u32> {
+        self.fingerprint
+            .as_ref()
+            .map(|fp| fp.model_hash)
+            .filter(|&h| h != 0)
+    }
 }
 
 #[cfg(test)]
@@ -701,5 +717,343 @@ mod tests {
         // Not LLM
         assert!(c.provider().is_none());
         assert!(c.endpoint().is_none());
+    }
+
+    #[test]
+    fn test_sdk_hash_convenience() {
+        let payload = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nContent-Type: application/json\r\nUser-Agent: openai-python/1.12.0\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
+        let c = classify(payload, Direction::Write, None);
+        let sdk_h = c.sdk_hash();
+        let model_h = c.model_hash();
+        assert!(sdk_h.is_some(), "sdk_hash should be populated");
+        assert!(model_h.is_some(), "model_hash should be populated");
+        assert_eq!(sdk_h.unwrap(), fingerprint::fnv1a_32(b"openai-python"));
+        assert_eq!(model_h.unwrap(), fingerprint::fnv1a_32(b"gpt-4"));
+    }
+
+    #[test]
+    fn test_sdk_hash_none_for_no_sdk() {
+        let payload = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        let c = classify(payload, Direction::Write, None);
+        assert!(c.sdk_hash().is_none());
+        assert!(c.model_hash().is_none());
+    }
+
+    // ================================================================
+    // Full classify() pipeline: every LLM provider
+    // ================================================================
+    //
+    // These tests verify that every provider in ENDPOINT_RULES is correctly
+    // identified when run through the full classify() pipeline (protocol
+    // detection → endpoint matching → fingerprinting → PII scan).
+
+    /// Helper: build an HTTP/1.1 POST request payload with JSON body.
+    fn make_post(host: &str, path: &str, body: &str) -> Vec<u8> {
+        format!(
+            "POST {path} HTTP/1.1\r\n\
+             Host: {host}\r\n\
+             Content-Type: application/json\r\n\
+             \r\n\
+             {body}"
+        )
+        .into_bytes()
+    }
+
+    /// Helper: build an HTTP/1.1 GET request.
+    fn make_get(host: &str, path: &str) -> Vec<u8> {
+        format!(
+            "GET {path} HTTP/1.1\r\n\
+             Host: {host}\r\n\
+             \r\n"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn classify_openai_chat_completions() {
+        let p = make_post(
+            "api.openai.com",
+            "/v1/chat/completions",
+            r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("OpenAI"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn classify_openai_embeddings() {
+        let p = make_post(
+            "api.openai.com",
+            "/v1/embeddings",
+            r#"{"model":"text-embedding-3-small","input":"hello"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("OpenAI"));
+        assert_eq!(c.endpoint(), Some("embeddings"));
+    }
+
+    #[test]
+    fn classify_openai_images() {
+        let p = make_post(
+            "api.openai.com",
+            "/v1/images/generations",
+            r#"{"model":"dall-e-3","prompt":"a cat"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("OpenAI"));
+        assert_eq!(c.endpoint(), Some("images"));
+    }
+
+    #[test]
+    fn classify_openai_models() {
+        let p = make_get("api.openai.com", "/v1/models");
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("OpenAI"));
+        assert_eq!(c.endpoint(), Some("models"));
+    }
+
+    #[test]
+    fn classify_anthropic_messages() {
+        let p = make_post(
+            "api.anthropic.com",
+            "/v1/messages",
+            r#"{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Anthropic"));
+        assert_eq!(c.endpoint(), Some("messages"));
+        assert_eq!(c.model(), Some("claude-sonnet-4-20250514"));
+    }
+
+    #[test]
+    fn classify_anthropic_complete() {
+        let p = make_post(
+            "api.anthropic.com",
+            "/v1/complete",
+            r#"{"model":"claude-2","prompt":"Hello"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Anthropic"));
+        assert_eq!(c.endpoint(), Some("complete"));
+    }
+
+    #[test]
+    fn classify_google_gemini() {
+        let p = make_post(
+            "generativelanguage.googleapis.com",
+            "/v1beta/models/gemini-pro:generateContent",
+            r#"{"contents":[{"parts":[{"text":"hi"}]}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Google"));
+        assert_eq!(c.endpoint(), Some("gemini"));
+    }
+
+    #[test]
+    fn classify_google_vertex() {
+        let p = make_post(
+            "aiplatform.googleapis.com",
+            "/v1/projects/my-proj/locations/us-central1/publishers/google/models/gemini-pro:predict",
+            r#"{"instances":[{"content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Google"));
+        assert_eq!(c.endpoint(), Some("vertex"));
+    }
+
+    #[test]
+    fn classify_azure_openai() {
+        let p = make_post(
+            "my-instance.openai.azure.com",
+            "/openai/deployments/gpt-4/chat/completions?api-version=2024-02-01",
+            r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Azure"));
+        assert_eq!(c.endpoint(), Some("openai"));
+    }
+
+    #[test]
+    fn classify_aws_bedrock() {
+        let p = make_post(
+            "bedrock-runtime.us-east-1.amazonaws.com",
+            "/model/anthropic.claude-v2/invoke",
+            r#"{"prompt":"hi","max_tokens_to_sample":100}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("AWS Bedrock"));
+        assert_eq!(c.endpoint(), Some("invoke"));
+    }
+
+    #[test]
+    fn classify_cohere_chat() {
+        let p = make_post(
+            "api.cohere.ai",
+            "/v1/chat",
+            r#"{"model":"command-r-plus","message":"hi"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Cohere"));
+        assert_eq!(c.endpoint(), Some("chat"));
+    }
+
+    #[test]
+    fn classify_cohere_generate() {
+        let p = make_post(
+            "api.cohere.ai",
+            "/v1/generate",
+            r#"{"model":"command","prompt":"hi"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Cohere"));
+        assert_eq!(c.endpoint(), Some("generate"));
+    }
+
+    #[test]
+    fn classify_cohere_embed() {
+        let p = make_post(
+            "api.cohere.ai",
+            "/v1/embed",
+            r#"{"model":"embed-english-v3.0","texts":["hi"]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Cohere"));
+        assert_eq!(c.endpoint(), Some("embed"));
+    }
+
+    #[test]
+    fn classify_mistral_chat() {
+        let p = make_post(
+            "api.mistral.ai",
+            "/v1/chat/completions",
+            r#"{"model":"mistral-large-latest","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Mistral"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("mistral-large-latest"));
+    }
+
+    #[test]
+    fn classify_groq_chat() {
+        let p = make_post(
+            "api.groq.com",
+            "/openai/v1/chat/completions",
+            r#"{"model":"llama3-70b-8192","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Groq"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("llama3-70b-8192"));
+    }
+
+    #[test]
+    fn classify_together_chat() {
+        let p = make_post(
+            "api.together.xyz",
+            "/v1/chat/completions",
+            r#"{"model":"meta-llama/Meta-Llama-3.1-70B","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Together"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("meta-llama/Meta-Llama-3.1-70B"));
+    }
+
+    #[test]
+    fn classify_deepseek_chat() {
+        let p = make_post(
+            "api.deepseek.com",
+            "/v1/chat/completions",
+            r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("DeepSeek"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("deepseek-chat"));
+    }
+
+    #[test]
+    fn classify_perplexity_chat() {
+        let p = make_post(
+            "api.perplexity.ai",
+            "/chat/completions",
+            r#"{"model":"llama-3.1-sonar-large-128k-online","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Perplexity"));
+        assert_eq!(c.endpoint(), Some("chat_completions"));
+        assert_eq!(c.model(), Some("llama-3.1-sonar-large-128k-online"));
+    }
+
+    #[test]
+    fn classify_ollama_chat() {
+        let p = make_post(
+            "localhost:11434",
+            "/api/chat",
+            r#"{"model":"llama3","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Ollama"));
+        assert_eq!(c.endpoint(), Some("chat"));
+        assert_eq!(c.model(), Some("llama3"));
+    }
+
+    #[test]
+    fn classify_ollama_generate() {
+        let p = make_post(
+            "localhost:11434",
+            "/api/generate",
+            r#"{"model":"codellama","prompt":"write hello world"}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Ollama"));
+        assert_eq!(c.endpoint(), Some("generate"));
+    }
+
+    #[test]
+    fn classify_generic_openai_compatible() {
+        let p = make_post(
+            "llm-gateway.internal.corp",
+            "/v1/chat/completions",
+            r#"{"model":"gpt-4","messages":[]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("OpenAI-compatible"));
+    }
+
+    #[test]
+    fn classify_generic_anthropic_compatible() {
+        let p = make_post(
+            "llm-gateway.internal.corp",
+            "/v1/messages",
+            r#"{"model":"claude-3","messages":[]}"#,
+        );
+        let c = classify(&p, Direction::Write, None);
+        assert!(c.is_interesting);
+        assert_eq!(c.provider(), Some("Anthropic-compatible"));
     }
 }
