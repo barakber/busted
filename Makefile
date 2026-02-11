@@ -1,4 +1,4 @@
-.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release clean check clippy fmt test install uninstall help
+.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release run-text clean check clippy fmt test install uninstall docker-build helm-lint helm-test helm-e2e help
 
 AGENT_FEATURES ?=
 
@@ -42,6 +42,9 @@ run-release: build-release ## Build and run in release mode
 run-verbose: build ## Build and run with verbose logging
 	sudo ./target/debug/busted monitor --verbose
 
+run-text: build ## Build and run with high-level action output (default text format)
+	sudo ./target/debug/busted monitor --format text
+
 run-json: build ## Build and run with JSON output
 	sudo ./target/debug/busted monitor --format json
 
@@ -79,6 +82,20 @@ install: ## Install busted to $(BINDIR) (run make build-release first)
 
 uninstall: ## Remove busted from $(BINDIR) (may need sudo)
 	rm -f $(DESTDIR)$(BINDIR)/busted
+
+## Deploy targets --------------------------------------------------------------
+
+docker-build: ## Build production Docker image
+	docker build -f deploy/Dockerfile -t busted:latest .
+
+helm-lint: ## Lint the Helm chart
+	helm lint deploy/helm/busted
+
+helm-test: ## Run Helm chart tests
+	deploy/helm/test.sh
+
+helm-e2e: build-release ## Run Helm E2E tests (kind + real eBPF + curl to OpenAI)
+	cargo test -p xtask --test helm_integration -- --ignored --nocapture
 
 ## Maintenance -----------------------------------------------------------------
 
