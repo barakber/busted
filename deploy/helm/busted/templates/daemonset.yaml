@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "busted.fullname" . }}
+  labels:
+    {{- include "busted.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "busted.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "busted.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "busted.fullname" . }}
+      hostPID: true
+      hostNetwork: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: busted
+          image: {{ include "busted.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - monitor
+            - "--format"
+            - {{ .Values.agent.format | quote }}
+            {{- if .Values.agent.verbose }}
+            - "--verbose"
+            {{- end }}
+            {{- if .Values.agent.enforce }}
+            - "--enforce"
+            {{- end }}
+            {{- if ne .Values.agent.output "stdout" }}
+            - "--output"
+            - {{ .Values.agent.output | quote }}
+            {{- end }}
+            {{- if .Values.policies.enabled }}
+            - "--policy-dir"
+            - "/etc/busted/policies"
+            {{- end }}
+            {{- if .Values.metrics.enabled }}
+            - "--metrics-port"
+            - {{ .Values.metrics.port | quote }}
+            {{- end }}
+            {{- range .Values.agent.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with .Values.agent.extraEnvs }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: true
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+            - name: modules
+              mountPath: /lib/modules
+              readOnly: true
+            {{- if .Values.policies.enabled }}
+            - name: policies
+              mountPath: /etc/busted/policies
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: modules
+          hostPath:
+            path: /lib/modules
+        {{- if .Values.policies.enabled }}
+        - name: policies
+          configMap:
+            name: {{ include "busted.fullname" . }}-policies
+        {{- end }}

@@ -1,0 +1,12 @@
+services:
+  busted:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    privileged: true
+    pid: host
+    volumes:
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+      - /lib/modules:/lib/modules:ro
+    command: ["monitor", "--format", "json"]

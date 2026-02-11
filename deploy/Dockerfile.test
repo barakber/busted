@@ -1,0 +1,17 @@
+# Lightweight test image — copies a pre-built busted binary.
+# Matches the production runtime stage (deploy/Dockerfile).
+# Usage: cargo xtask build --release && docker build -f deploy/Dockerfile.test -t busted:test .
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libelf1 \
+    libssl3t64 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY target/release/busted /usr/bin/busted
+
+ENTRYPOINT ["busted"]
+CMD ["monitor", "--format", "json"]

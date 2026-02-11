@@ -1,0 +1,23 @@
+[Unit]
+Description=Busted - eBPF LLM/AI Communication Monitor
+Documentation=https://github.com/barakber/busted
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/busted monitor --format json
+Restart=on-failure
+RestartSec=5
+
+# Security — grant only the capabilities needed for eBPF
+AmbientCapabilities=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON
+NoNewPrivileges=yes
+
+# Hardening
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/sys/fs/bpf
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

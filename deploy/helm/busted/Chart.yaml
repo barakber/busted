@@ -1,0 +1,12 @@
+apiVersion: v2
+name: busted
+description: eBPF-based LLM/AI communication monitoring agent
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/barakber/busted
+sources:
+  - https://github.com/barakber/busted
+maintainers:
+  - name: Barak Bercovitz
+    email: barakber@gmail.com

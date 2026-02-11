@@ -1,0 +1,13 @@
+{{- if .Values.policies.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "busted.fullname" . }}-policies
+  labels:
+    {{- include "busted.labels" . | nindent 4 }}
+data:
+  {{- range $name, $source := .Values.policies.rules }}
+  {{ $name }}: |
+    {{ $source | nindent 4 }}
+  {{- end }}
+{{- end }}

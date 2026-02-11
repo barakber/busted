@@ -1,0 +1,36 @@
+image:
+  repository: ghcr.io/barakber/busted
+  tag: ""              # defaults to Chart.appVersion
+  pullPolicy: IfNotPresent
+
+agent:
+  format: json         # text | json | verbose
+  verbose: false
+  enforce: false
+  output: stdout       # stdout | webhook:URL | file:PATH | syslog:HOST
+  extraArgs: []
+  extraEnvs: []        # additional env vars, e.g. [{name: RUST_LOG, value: debug}]
+
+policies:
+  enabled: false
+  rules: {}            # key: filename, value: rego source (mounted as ConfigMap)
+
+metrics:
+  enabled: true
+  port: 9090
+  serviceMonitor:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+rbac:
+  create: true
+
+nodeSelector: {}
+tolerations: []        # add key: node-role.kubernetes.io/control-plane for masters
