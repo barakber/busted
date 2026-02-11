@@ -1,0 +1,17 @@
+[package]
+name = "busted-identity"
+description = "Cross-event AI agent identity resolution and timeline tracking"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["llm", "identity", "agent", "monitoring", "ai"]
+categories = ["network-programming"]
+
+[dependencies]
+busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
+log = { workspace = true }
+serde = { workspace = true }

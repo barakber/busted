@@ -57,6 +57,14 @@ fn bare_event() -> ProcessedEvent {
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     }
 }
 
@@ -408,6 +416,14 @@ fn default_all_fields_populated_no_crash() {
         llm_system_prompt: Some("You are a helpful assistant".into()),
         llm_messages_json: Some(r#"[{"role":"user","content":"hi"}]"#.into()),
         llm_stream: Some(false),
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     };
     let d = engine.evaluate(&event).unwrap();
     // With provider set and pii_detected=false, should be Audit

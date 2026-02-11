@@ -284,6 +284,14 @@ fn processed_event_serde_round_trip() {
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();
@@ -338,6 +346,14 @@ fn processed_event_skip_serializing_none_fields() {
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();
@@ -407,6 +423,14 @@ fn processed_event_all_optional_fields_set() {
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     };
 
     let json = serde_json::to_string(&pe).unwrap();

@@ -59,6 +59,14 @@ pub fn from_network_event(
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: None,
+        agent_model_hash: None,
     }
 }
 
@@ -133,6 +141,14 @@ pub fn from_tls_data_event(
         llm_system_prompt: None,
         llm_messages_json: None,
         llm_stream: None,
+        identity_id: None,
+        identity_instance: None,
+        identity_confidence: None,
+        identity_narrative: None,
+        identity_timeline: None,
+        identity_timeline_len: None,
+        agent_sdk_hash: classification.sdk_hash(),
+        agent_model_hash: classification.model_hash(),
     }
 }
 

@@ -293,6 +293,14 @@ mod tests {
             llm_system_prompt: None,
             llm_messages_json: None,
             llm_stream: None,
+            identity_id: None,
+            identity_instance: None,
+            identity_confidence: None,
+            identity_narrative: None,
+            identity_timeline: None,
+            identity_timeline_len: None,
+            agent_sdk_hash: None,
+            agent_model_hash: None,
         }
     }
 
@@ -340,6 +348,14 @@ mod tests {
             llm_system_prompt: None,
             llm_messages_json: None,
             llm_stream: None,
+            identity_id: None,
+            identity_instance: None,
+            identity_confidence: None,
+            identity_narrative: None,
+            identity_timeline: None,
+            identity_timeline_len: None,
+            agent_sdk_hash: None,
+            agent_model_hash: None,
         }
     }
 
@@ -1488,6 +1504,64 @@ reasons[r] {
         assert!(
             d2.reasons.is_empty(),
             "non-matching reasons should be empty"
+        );
+    }
+
+    // ================================================================
+    // Identity fields visible in Rego
+    // ================================================================
+
+    #[test]
+    fn rego_sees_identity_timeline_len() {
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+default decision = "allow"
+decision = "deny" { input.identity_timeline_len > 100 }
+"#,
+        );
+        let mut event = sample_event();
+        event.identity_timeline_len = Some(150);
+        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
+
+        event.identity_timeline_len = Some(50);
+        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+    }
+
+    #[test]
+    fn rego_sees_identity_confidence() {
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+default decision = "allow"
+decision = "audit" { input.identity_confidence > 0.9 }
+"#,
+        );
+        let mut event = sample_event();
+        event.identity_confidence = Some(0.95);
+        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
+
+        event.identity_confidence = Some(0.5);
+        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+    }
+
+    #[test]
+    fn rego_sees_identity_id() {
+        let (_dir, mut engine) = engine_with(
+            r#"
+package busted
+default decision = "allow"
+decision = "deny" { input.identity_id != null }
+"#,
+        );
+        let mut event = sample_event();
+        event.identity_id = Some(12345);
+        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
+
+        // null identity_id → allow
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Allow
         );
     }
 }

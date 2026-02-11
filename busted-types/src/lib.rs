@@ -516,6 +516,34 @@ pub mod processed {
         /// Whether the request is streaming.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub llm_stream: Option<bool>,
+
+        // --- Identity tracking (from busted-identity) ---
+        /// Stable identity ID for this agent type (FNV-1a of TypeKey).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_id: Option<u64>,
+        /// Instance key description (PID + container + cgroup).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_instance: Option<String>,
+        /// Identity match confidence (0.0–1.0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_confidence: Option<f32>,
+        /// Human-readable narrative of agent activity.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_narrative: Option<String>,
+        /// Compact timeline summary (e.g. "LlmCall x12, McpCall x3").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_timeline: Option<String>,
+        /// Number of events in the identity timeline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity_timeline_len: Option<usize>,
+
+        // --- Classifier hash fields ---
+        /// FNV-1a 32-bit hash of SDK name from fingerprint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent_sdk_hash: Option<u32>,
+        /// FNV-1a 32-bit hash of model name from fingerprint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub agent_model_hash: Option<u32>,
     }
 }
 

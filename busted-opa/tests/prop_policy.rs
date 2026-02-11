@@ -150,6 +150,14 @@ fn processed_event_strategy() -> impl Strategy<Value = ProcessedEvent> {
                 llm_system_prompt: None,
                 llm_messages_json: None,
                 llm_stream: None,
+                identity_id: None,
+                identity_instance: None,
+                identity_confidence: None,
+                identity_narrative: None,
+                identity_timeline: None,
+                identity_timeline_len: None,
+                agent_sdk_hash: None,
+                agent_model_hash: None,
             }
         })
 }
@@ -413,6 +421,10 @@ decision = "allow" { input.provider == data.ok[_] }
             classifier_confidence: None, pii_detected: None,
             llm_user_message: None, llm_system_prompt: None,
             llm_messages_json: None, llm_stream: None,
+            identity_id: None, identity_instance: None,
+            identity_confidence: None, identity_narrative: None,
+            identity_timeline: None, identity_timeline_len: None,
+            agent_sdk_hash: None, agent_model_hash: None,
         };
 
         let d = engine.evaluate(&event).unwrap();
@@ -640,6 +652,10 @@ reasons[r] { input.provider != null; r := "has provider" }
             classifier_confidence: None, pii_detected: None,
             llm_user_message: None, llm_system_prompt: None,
             llm_messages_json: None, llm_stream: None,
+            identity_id: None, identity_instance: None,
+            identity_confidence: None, identity_narrative: None,
+            identity_timeline: None, identity_timeline_len: None,
+            agent_sdk_hash: None, agent_model_hash: None,
         };
         let result = engine.evaluate(&event);
         prop_assert!(result.is_ok(), "evaluate errored on special chars: {:?}", result.err());
