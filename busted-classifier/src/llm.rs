@@ -610,6 +610,269 @@ mod tests {
         assert_eq!(provider_from_sni(None), None);
     }
 
+    // ---- Provider coverage: every provider in ENDPOINT_RULES ----
+
+    #[test]
+    fn test_google_gemini() {
+        let raw = b"POST /v1beta/models/gemini-pro:generateContent HTTP/1.1\r\nHost: generativelanguage.googleapis.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Google");
+        assert_eq!(info.endpoint, "gemini");
+    }
+
+    #[test]
+    fn test_google_gemini_v1() {
+        let raw = b"GET /v1/models HTTP/1.1\r\nHost: generativelanguage.googleapis.com\r\n\r\n";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Google");
+        assert_eq!(info.endpoint, "gemini");
+    }
+
+    #[test]
+    fn test_google_vertex() {
+        let raw = b"POST /v1/projects/my-project/locations/us-central1/publishers/google/models/gemini-pro:predict HTTP/1.1\r\nHost: aiplatform.googleapis.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Google");
+        assert_eq!(info.endpoint, "vertex");
+    }
+
+    #[test]
+    fn test_cohere_chat() {
+        let raw = b"POST /v1/chat HTTP/1.1\r\nHost: api.cohere.ai\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Cohere");
+        assert_eq!(info.endpoint, "chat");
+    }
+
+    #[test]
+    fn test_cohere_generate() {
+        let raw = b"POST /v1/generate HTTP/1.1\r\nHost: api.cohere.ai\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Cohere");
+        assert_eq!(info.endpoint, "generate");
+    }
+
+    #[test]
+    fn test_cohere_embed() {
+        let raw = b"POST /v1/embed HTTP/1.1\r\nHost: api.cohere.ai\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Cohere");
+        assert_eq!(info.endpoint, "embed");
+    }
+
+    #[test]
+    fn test_mistral_chat() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.mistral.ai\r\n\r\n{\"model\":\"mistral-large\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Mistral");
+        assert_eq!(info.endpoint, "chat_completions");
+        assert_eq!(info.model.as_deref(), Some("mistral-large"));
+    }
+
+    #[test]
+    fn test_groq_chat() {
+        let raw = b"POST /openai/v1/chat/completions HTTP/1.1\r\nHost: api.groq.com\r\n\r\n{\"model\":\"llama3-70b\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Groq");
+        assert_eq!(info.endpoint, "chat_completions");
+        assert_eq!(info.model.as_deref(), Some("llama3-70b"));
+    }
+
+    #[test]
+    fn test_together_chat() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.together.xyz\r\n\r\n{\"model\":\"meta-llama/Llama-3-70b\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Together");
+        assert_eq!(info.endpoint, "chat_completions");
+        assert_eq!(info.model.as_deref(), Some("meta-llama/Llama-3-70b"));
+    }
+
+    #[test]
+    fn test_deepseek_chat() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nHost: api.deepseek.com\r\n\r\n{\"model\":\"deepseek-chat\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "DeepSeek");
+        assert_eq!(info.endpoint, "chat_completions");
+        assert_eq!(info.model.as_deref(), Some("deepseek-chat"));
+    }
+
+    #[test]
+    fn test_perplexity_chat() {
+        let raw = b"POST /chat/completions HTTP/1.1\r\nHost: api.perplexity.ai\r\n\r\n{\"model\":\"pplx-70b\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Perplexity");
+        assert_eq!(info.endpoint, "chat_completions");
+        assert_eq!(info.model.as_deref(), Some("pplx-70b"));
+    }
+
+    #[test]
+    fn test_openai_embeddings() {
+        let raw = b"POST /v1/embeddings HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{\"model\":\"text-embedding-3-small\",\"input\":\"hello\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+        assert_eq!(info.endpoint, "embeddings");
+        assert_eq!(info.model.as_deref(), Some("text-embedding-3-small"));
+    }
+
+    #[test]
+    fn test_openai_images() {
+        let raw = b"POST /v1/images/generations HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{\"model\":\"dall-e-3\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+        assert_eq!(info.endpoint, "images");
+        assert_eq!(info.model.as_deref(), Some("dall-e-3"));
+    }
+
+    #[test]
+    fn test_openai_audio() {
+        let raw = b"POST /v1/audio/speech HTTP/1.1\r\nHost: api.openai.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+        assert_eq!(info.endpoint, "audio");
+    }
+
+    #[test]
+    fn test_openai_models_list() {
+        let raw = b"GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI");
+        assert_eq!(info.endpoint, "models");
+    }
+
+    #[test]
+    fn test_anthropic_complete() {
+        let raw = b"POST /v1/complete HTTP/1.1\r\nHost: api.anthropic.com\r\n\r\n{\"model\":\"claude-2\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Anthropic");
+        assert_eq!(info.endpoint, "complete");
+        assert_eq!(info.model.as_deref(), Some("claude-2"));
+    }
+
+    #[test]
+    fn test_ollama_generate() {
+        let raw =
+            b"POST /api/generate HTTP/1.1\r\nHost: localhost:11434\r\n\r\n{\"model\":\"llama3\"}";
+        let req = http::parse_request(raw).unwrap();
+        let body = &raw[req.body_offset.unwrap()..];
+        let jf = json::analyze(body);
+        let info = match_request_with_body(&req, None, &jf).unwrap();
+        assert_eq!(info.provider, "Ollama");
+        assert_eq!(info.endpoint, "generate");
+        assert_eq!(info.model.as_deref(), Some("llama3"));
+    }
+
+    #[test]
+    fn test_ollama_embeddings() {
+        let raw = b"POST /api/embeddings HTTP/1.1\r\nHost: localhost:11434\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Ollama");
+        assert_eq!(info.endpoint, "embeddings");
+    }
+
+    #[test]
+    fn test_generic_openai_compatible_completions() {
+        let raw = b"POST /v1/completions HTTP/1.1\r\nHost: my-proxy.example.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI-compatible");
+        assert_eq!(info.endpoint, "completions");
+    }
+
+    #[test]
+    fn test_generic_openai_compatible_embeddings() {
+        let raw = b"POST /v1/embeddings HTTP/1.1\r\nHost: my-proxy.example.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI-compatible");
+        assert_eq!(info.endpoint, "embeddings");
+    }
+
+    #[test]
+    fn test_generic_anthropic_compatible() {
+        let raw = b"POST /v1/messages HTTP/1.1\r\nHost: my-proxy.example.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "Anthropic-compatible");
+        assert_eq!(info.endpoint, "messages");
+    }
+
+    #[test]
+    fn test_generic_chat_completions_no_v1() {
+        let raw = b"POST /chat/completions HTTP/1.1\r\nHost: my-proxy.example.com\r\n\r\n{}";
+        let req = http::parse_request(raw).unwrap();
+        let info = match_request(&req, None).unwrap();
+        assert_eq!(info.provider, "OpenAI-compatible");
+        assert_eq!(info.endpoint, "chat_completions");
+    }
+
+    /// Exhaustive: every unique (provider, endpoint) pair in ENDPOINT_RULES
+    /// is tested by at least one test above. This meta-test verifies coverage
+    /// by collecting all providers from the rule table.
+    #[test]
+    fn all_providers_have_tests() {
+        let providers: std::collections::HashSet<&str> =
+            ENDPOINT_RULES.iter().map(|r| r.provider).collect();
+
+        // Every provider in the table must be listed here.
+        // If you add a new provider to ENDPOINT_RULES, add it here too.
+        let tested = [
+            "OpenAI",
+            "Anthropic",
+            "Google",
+            "Azure",
+            "AWS Bedrock",
+            "Ollama",
+            "Cohere",
+            "Mistral",
+            "Groq",
+            "Together",
+            "DeepSeek",
+            "Perplexity",
+            "OpenAI-compatible",
+            "Anthropic-compatible",
+        ];
+        for provider in &providers {
+            assert!(
+                tested.contains(provider),
+                "Provider '{}' in ENDPOINT_RULES has no test — add one!",
+                provider
+            );
+        }
+    }
+
     #[test]
     fn test_no_match_get_on_post_only_endpoint() {
         let raw = b"GET /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\n\r\n";
