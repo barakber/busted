@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["action","identity","narrative","resolver","timeline"],"struct":["IdentityTracker","TrackerConfig"]};
+window.SIDEBAR_ITEMS = {"mod":["action","capability","embedding","identity","narrative","ngrams","resolver","scoring","simhash","timeline"],"struct":["IdentityTracker","TrackerConfig"]};

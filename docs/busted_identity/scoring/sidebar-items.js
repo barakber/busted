@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["COMPOSITE_THRESHOLD","SEMANTIC_THRESHOLD"],"fn":["find_best_composite_match","score_candidate"],"struct":["ResolveContext"]};

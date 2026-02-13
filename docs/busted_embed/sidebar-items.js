@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["EMBEDDING_DIM","MODEL_ID","MODEL_REVISION"],"struct":["Embedder"]};

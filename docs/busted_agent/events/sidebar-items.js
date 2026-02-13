@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["from_network_event"]};
+window.SIDEBAR_ITEMS = {"fn":["format_timestamp","format_timestamp_now","from_network_event","from_tls_session"]};

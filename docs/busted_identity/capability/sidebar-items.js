@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["extract_capability_hash"]};

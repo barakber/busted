@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["run_tui"],"mod":["app","demo","event","socket","ui"],"struct":["TuiConfig"]};

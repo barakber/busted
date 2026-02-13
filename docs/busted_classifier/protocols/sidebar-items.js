@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["parse_llm_request"],"mod":["anthropic","openai"],"struct":["LlmMessage","LlmRequestParsed"]};
+window.SIDEBAR_ITEMS = {"fn":["parse_llm_request","parse_llm_response"],"mod":["anthropic","openai"],"struct":["LlmMessage","LlmRequestParsed","LlmResponseParsed","ToolCallParsed","ToolResultParsed"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["run_ui"],"mod":["app","demo","views"],"struct":["UiConfig"]};
+window.SIDEBAR_ITEMS = {"fn":["run_ui"],"mod":["app","bridge","demo","ui"],"struct":["UiConfig"]};
