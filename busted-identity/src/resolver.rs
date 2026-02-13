@@ -1,4 +1,4 @@
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::BustedEvent;
 
 use crate::action::ProviderTag;
 use crate::identity::{compute_identity_id, IdentityId, InstanceKey, ResolvedIdentity, TypeKey};
@@ -14,34 +14,34 @@ fn fnv1a_32(bytes: &[u8]) -> u32 {
     h
 }
 
-/// Extract an InstanceKey from a ProcessedEvent.
-pub fn extract_instance_key(event: &ProcessedEvent) -> InstanceKey {
-    let container_id_hash = if event.container_id.is_empty() {
+/// Extract an InstanceKey from a BustedEvent.
+pub fn extract_instance_key(event: &BustedEvent) -> InstanceKey {
+    let container_id_hash = if event.process.container_id.is_empty() {
         0
     } else {
-        fnv1a_32(event.container_id.as_bytes())
+        fnv1a_32(event.process.container_id.as_bytes())
     };
-    InstanceKey::new(event.pid, container_id_hash, event.cgroup_id)
+    InstanceKey::new(
+        event.process.pid,
+        container_id_hash,
+        event.process.cgroup_id,
+    )
 }
 
-/// Extract a TypeKey from a ProcessedEvent (may be partial).
-pub fn extract_type_key(event: &ProcessedEvent) -> TypeKey {
+/// Extract a TypeKey from a BustedEvent (may be partial).
+pub fn extract_type_key(event: &BustedEvent) -> TypeKey {
     TypeKey {
-        signature_hash: event.agent_fingerprint.unwrap_or(0),
-        sdk_hash: event.agent_sdk_hash.unwrap_or(0),
-        model_hash: event.agent_model_hash.unwrap_or(0),
+        signature_hash: event.fingerprint().unwrap_or(0),
+        sdk_hash: event.sdk_hash().unwrap_or(0),
+        model_hash: event.model_hash().unwrap_or(0),
     }
 }
 
 /// Build a human-readable label from event fields.
-pub fn build_label(event: &ProcessedEvent) -> String {
-    let sdk = event.agent_sdk.as_deref().unwrap_or("");
-    let model = event.llm_model.as_deref().unwrap_or("");
-    let provider = event
-        .llm_provider
-        .as_deref()
-        .or(event.provider.as_deref())
-        .unwrap_or("");
+pub fn build_label(event: &BustedEvent) -> String {
+    let sdk = event.sdk().unwrap_or("");
+    let model = event.model().unwrap_or("");
+    let provider = event.provider().unwrap_or("");
 
     if !sdk.is_empty() && !model.is_empty() {
         format!("{} ({})", sdk, model)
@@ -52,7 +52,7 @@ pub fn build_label(event: &ProcessedEvent) -> String {
     } else if !provider.is_empty() {
         provider.to_string()
     } else {
-        format!("pid:{}", event.pid)
+        format!("pid:{}", event.process.pid)
     }
 }
 
@@ -67,6 +67,10 @@ pub enum MatchLevel {
     MediumType,
     /// Weak: same provider + ML cluster.
     Weak,
+    /// Semantic match via composite scoring (score >= 0.85).
+    SemanticMatch(f32),
+    /// Composite multi-signal match (score 0.60–0.85).
+    CompositeMatch(f32),
     /// No match — new identity.
     New,
 }
@@ -78,6 +82,8 @@ impl MatchLevel {
             Self::StrongType => 0.95,
             Self::MediumType => 0.75,
             Self::Weak => 0.45,
+            Self::SemanticMatch(score) => *score,
+            Self::CompositeMatch(score) => *score,
             Self::New => 0.3,
         }
     }
@@ -87,7 +93,7 @@ impl MatchLevel {
 ///
 /// Returns `(identity_id, instance_key, match_level, is_new)`.
 pub fn resolve(
-    event: &ProcessedEvent,
+    event: &BustedEvent,
     instance_map: &HashMap<InstanceKey, IdentityId>,
     type_map: &HashMap<TypeKey, IdentityId>,
     identities: &HashMap<IdentityId, ResolvedIdentity>,
@@ -117,15 +123,15 @@ pub fn resolve(
         }
     }
 
-    // 4. Weak match: same provider + ML cluster_id
-    if let (Some(provider_str), Some(cluster)) = (event.provider.as_deref(), event.cluster_id) {
-        let provider = ProviderTag::parse(provider_str);
-        for identity in identities.values() {
-            if identity.providers.contains(&provider) {
-                // Check if any active instance has the same cluster
-                // This is a weak heuristic — cluster_id isn't stored per-identity,
-                // so just match on provider overlap for now
-                if cluster >= 0 {
+    // 4. Weak match: same provider (only if TypeKey is partial/empty —
+    //    a full TypeKey that didn't match above means a genuinely different agent)
+    let has_full_type_key =
+        type_key.signature_hash != 0 && type_key.sdk_hash != 0 && type_key.model_hash != 0;
+    if !has_full_type_key {
+        if let Some(provider_str) = event.provider() {
+            let provider = ProviderTag::parse(provider_str);
+            for identity in identities.values() {
+                if identity.providers.contains(&provider) {
                     return (identity.identity_id, instance_key, MatchLevel::Weak, false);
                 }
             }
@@ -160,58 +166,40 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busted_types::agentic::{AgenticAction, ProcessInfo};
 
-    fn base_event() -> ProcessedEvent {
-        ProcessedEvent {
-            event_type: "TLS_DATA_WRITE".into(),
+    fn base_event() -> BustedEvent {
+        BustedEvent {
             timestamp: "12:00:00.000".into(),
-            pid: 1234,
-            uid: 1000,
-            process_name: "python3".into(),
-            src_ip: "10.0.0.1".into(),
-            src_port: 54321,
-            dst_ip: "104.18.1.1".into(),
-            dst_port: 443,
-            bytes: 512,
-            provider: Some("OpenAI".into()),
+            process: ProcessInfo {
+                pid: 1234,
+                uid: 1000,
+                name: "python3".into(),
+                container_id: String::new(),
+                cgroup_id: 42,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1234:abc".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 42,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            ml_confidence: None,
-            ml_provider: None,
-            behavior_class: None,
-            cluster_id: None,
-            sni: None,
-            tls_protocol: None,
-            tls_details: None,
-            tls_payload: None,
-            content_class: Some("LlmApi".into()),
-            llm_provider: Some("OpenAI".into()),
-            llm_endpoint: None,
-            llm_model: Some("gpt-4".into()),
-            mcp_method: None,
-            mcp_category: None,
-            agent_sdk: Some("openai-python/1.12.0".into()),
-            agent_fingerprint: Some(0xdeadbeef),
-            classifier_confidence: Some(0.9),
-            pii_detected: Some(false),
-            llm_user_message: None,
-            llm_system_prompt: None,
-            llm_messages_json: None,
-            llm_stream: None,
-            identity_id: None,
-            identity_instance: None,
-            identity_confidence: None,
-            identity_narrative: None,
-            identity_timeline: None,
-            identity_timeline_len: None,
-            agent_sdk_hash: Some(fnv1a_32(b"openai-python")),
-            agent_model_hash: Some(fnv1a_32(b"gpt-4")),
+            action: AgenticAction::Prompt {
+                provider: "OpenAI".into(),
+                model: Some("gpt-4".into()),
+                user_message: None,
+                system_prompt: None,
+                stream: false,
+                sdk: Some("openai-python/1.12.0".into()),
+                bytes: 512,
+                sni: None,
+                endpoint: None,
+                fingerprint: Some(0xdeadbeef),
+                pii_detected: Some(false),
+                confidence: Some(0.9),
+                sdk_hash: Some(fnv1a_32(b"openai-python")),
+                model_hash: Some(fnv1a_32(b"gpt-4")),
+            },
         }
     }
 
@@ -271,7 +259,23 @@ mod tests {
     #[test]
     fn build_label_no_sdk() {
         let mut event = base_event();
-        event.agent_sdk = None;
+        // Create a Prompt without sdk
+        event.action = AgenticAction::Prompt {
+            provider: "OpenAI".into(),
+            model: Some("gpt-4".into()),
+            user_message: None,
+            system_prompt: None,
+            stream: false,
+            sdk: None,
+            bytes: 512,
+            sni: None,
+            endpoint: None,
+            fingerprint: Some(0xdeadbeef),
+            pii_detected: None,
+            confidence: None,
+            sdk_hash: None,
+            model_hash: Some(fnv1a_32(b"gpt-4")),
+        };
         let label = build_label(&event);
         assert_eq!(label, "OpenAI gpt-4");
     }

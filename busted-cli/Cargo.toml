@@ -24,6 +24,7 @@ serde_json = { workspace = true }
 busted-agent = { version = "0.1.0", path = "../busted-agent", optional = true }
 busted-ui = { version = "0.1.0", path = "../busted-ui", optional = true }
 busted-opa = { version = "0.1.0", path = "../busted-opa", optional = true }
+busted-tui = { version = "0.1.0", path = "../busted-tui", optional = true }
 busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
 tokio = { workspace = true }
 
@@ -31,12 +32,17 @@ tokio = { workspace = true }
 default = ["monitor", "policy"]
 monitor = ["dep:busted-agent"]
 ui = ["dep:busted-ui"]
+tui = ["dep:busted-tui"]
 policy = ["dep:busted-opa"]
-full = ["monitor", "ui", "policy", "tls", "opa", "ml", "k8s", "prometheus", "identity"]
+full = ["monitor", "ui", "tui", "policy", "tls", "opa", "ml", "k8s", "prometheus", "identity"]
 # Pass-through features for busted-agent
 k8s = ["busted-agent?/k8s"]
 ml = ["busted-agent?/ml"]
 tls = ["busted-agent?/tls"]
 identity = ["busted-agent?/identity"]
+identity-semantic = ["identity", "busted-agent?/identity-semantic"]
+identity-persist = ["identity", "busted-agent?/identity-persist"]
+identity-graph = ["identity", "busted-agent?/identity-graph"]
+identity-full = ["identity", "busted-agent?/identity-full"]
 opa = ["busted-agent?/opa"]
 prometheus = ["busted-agent?/prometheus"]

@@ -5,7 +5,9 @@
 //! rules the engine supports.
 
 use busted_opa::{Action, PolicyEngine};
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{
+    AgenticAction, BustedEvent, IdentityInfo, NetworkEventKind, ProcessInfo,
+};
 use std::io::Write;
 use std::path::Path;
 
@@ -13,57 +15,106 @@ use std::path::Path;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn bare_event() -> ProcessedEvent {
-    ProcessedEvent {
-        event_type: "TCP_CONNECT".into(),
+/// Minimal Network event: no provider, pure background traffic.
+fn bare_event() -> BustedEvent {
+    BustedEvent {
         timestamp: "12:00:00.000".into(),
-        pid: 1000,
-        uid: 1000,
-        process_name: "python3".into(),
-        src_ip: "10.0.0.5".into(),
-        src_port: 45000,
-        dst_ip: "104.18.1.1".into(),
-        dst_port: 443,
-        bytes: 1024,
-        provider: None,
+        process: ProcessInfo {
+            pid: 1000,
+            uid: 1000,
+            name: "python3".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1000:net".into(),
+        identity: None,
         policy: None,
-        container_id: String::new(),
-        cgroup_id: 0,
-        request_rate: None,
-        session_bytes: None,
-        pod_name: None,
-        pod_namespace: None,
-        service_account: None,
-        ml_confidence: None,
-        ml_provider: None,
-        behavior_class: None,
-        cluster_id: None,
-        sni: None,
-        tls_protocol: None,
-        tls_details: None,
-        tls_payload: None,
-        content_class: None,
-        llm_provider: None,
-        llm_endpoint: None,
-        llm_model: None,
-        mcp_method: None,
-        mcp_category: None,
-        agent_sdk: None,
-        agent_fingerprint: None,
-        classifier_confidence: None,
-        pii_detected: None,
-        llm_user_message: None,
-        llm_system_prompt: None,
-        llm_messages_json: None,
-        llm_stream: None,
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: None,
-        agent_model_hash: None,
+        action: AgenticAction::Network {
+            kind: NetworkEventKind::Connect,
+            src_ip: "10.0.0.5".into(),
+            src_port: 45000,
+            dst_ip: "104.18.1.1".into(),
+            dst_port: 443,
+            bytes: 1024,
+            sni: None,
+            provider: None,
+        },
+    }
+}
+
+/// Network event with a specific provider.
+fn network_event(prov: &str) -> BustedEvent {
+    let mut event = bare_event();
+    if let AgenticAction::Network {
+        ref mut provider, ..
+    } = event.action
+    {
+        *provider = Some(prov.into());
+    }
+    event
+}
+
+/// Prompt event for PII/model/SDK tests.
+fn prompt_event(provider: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "12:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1000,
+            uid: 1000,
+            name: "python3".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1000:abc".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::Prompt {
+            provider: provider.into(),
+            model: None,
+            user_message: None,
+            system_prompt: None,
+            stream: false,
+            sdk: None,
+            bytes: 1024,
+            sni: None,
+            endpoint: None,
+            fingerprint: None,
+            pii_detected: None,
+            confidence: None,
+            sdk_hash: None,
+            model_hash: None,
+        },
+    }
+}
+
+/// McpRequest event.
+fn mcp_event(method: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "12:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1000,
+            uid: 1000,
+            name: "mcp-client".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1000:mcp".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::McpRequest {
+            method: method.into(),
+            category: None,
+            params_preview: None,
+        },
     }
 }
 
@@ -101,36 +152,35 @@ package busted
 default decision = "deny"
 
 decision = "allow" {
-    input.provider == data.approved_providers[_]
+    input.action.provider == data.approved_providers[_]
 }
 
 decision = "allow" {
-    input.provider == null
+    not input.action.provider
 }
 
 reasons[r] {
-    input.provider != null
+    input.action.provider != null
     not provider_approved
-    r := concat("", ["Unapproved LLM provider: ", input.provider])
+    r := concat("", ["Unapproved LLM provider: ", input.action.provider])
 }
 
 provider_approved {
-    input.provider == data.approved_providers[_]
+    input.action.provider == data.approved_providers[_]
 }
 "#,
         r#"{"approved_providers": ["OpenAI", "Anthropic"]}"#,
     );
 
     // Approved providers pass
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
+    let event = network_event("OpenAI");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.provider = Some("Anthropic".into());
+    let event = network_event("Anthropic");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
     // Unapproved provider is denied
-    event.provider = Some("DeepSeek".into());
+    let event = network_event("DeepSeek");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("Unapproved")));
@@ -153,40 +203,43 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.provider != null
-    input.pod_namespace == "production"
+    input.action.provider
+    is_production
 }
 
 decision = "audit" {
-    input.provider != null
-    input.pod_namespace != "production"
+    input.action.provider
+    not is_production
+}
+
+is_production {
+    input.process.pod_namespace == "production"
 }
 
 reasons[r] {
-    input.provider != null
-    input.pod_namespace == "production"
+    input.action.provider
+    is_production
     r := "LLM access denied in production namespace"
 }
 "#,
     );
 
-    // Production namespace + provider → deny
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pod_namespace = Some("production".into());
+    // Production namespace + provider -> deny
+    let mut event = network_event("OpenAI");
+    event.process.pod_namespace = Some("production".into());
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("production")));
 
-    // Staging namespace + provider → audit
-    event.pod_namespace = Some("staging".into());
+    // Staging namespace + provider -> audit
+    event.process.pod_namespace = Some("staging".into());
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
 
-    // No namespace + provider → audit
-    event.pod_namespace = None;
+    // No namespace + provider -> audit
+    event.process.pod_namespace = None;
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
 
-    // No provider at all → allow
+    // No provider at all -> allow
     assert_eq!(
         engine.evaluate(&bare_event()).unwrap().action,
         Action::Allow
@@ -206,50 +259,49 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.provider != null
+    input.action.provider != null
     not approved_process
 }
 
 approved_process {
-    input.process_name == data.allowed_processes[_]
+    input.process.name == data.allowed_processes[_]
 }
 
 reasons[r] {
-    input.provider != null
+    input.action.provider != null
     not approved_process
-    r := concat("", ["Process '", input.process_name, "' is not authorized for LLM access"])
+    r := concat("", ["Process '", input.process.name, "' is not authorized for LLM access"])
 }
 "#,
         r#"{"allowed_processes": ["llm-agent", "chatbot-svc", "python3"]}"#,
     );
 
-    // Approved process + provider → allow
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.process_name = "llm-agent".into();
+    // Approved process + provider -> allow
+    let mut event = network_event("OpenAI");
+    event.process.name = "llm-agent".into();
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.process_name = "python3".into();
+    event.process.name = "python3".into();
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    // Unapproved process + provider → deny
-    event.process_name = "curl".into();
+    // Unapproved process + provider -> deny
+    event.process.name = "curl".into();
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("curl")));
 
-    // No provider → allow regardless
+    // No provider -> allow regardless
     let mut event2 = bare_event();
-    event2.process_name = "curl".into();
+    event2.process.name = "curl".into();
     assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 4: MCP tool call restrictions
+// Scenario 4: MCP method restrictions
 // =====================================================================
 
 #[test]
-fn scenario_mcp_tool_restrictions() {
+fn scenario_mcp_method_restrictions() {
     let (_dir, mut engine) = engine_with_data(
         r#"
 package busted
@@ -257,44 +309,43 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.mcp_method != null
-    input.mcp_method == data.blocked_methods[_]
+    input.action.method != null
+    input.action.method == data.blocked_methods[_]
 }
 
 decision = "audit" {
-    input.mcp_method != null
+    input.action.method != null
     not method_blocked
 }
 
 method_blocked {
-    input.mcp_method == data.blocked_methods[_]
+    input.action.method == data.blocked_methods[_]
 }
 
 reasons[r] {
-    input.mcp_method != null
+    input.action.method != null
     method_blocked
-    r := concat("", ["Blocked MCP method: ", input.mcp_method])
+    r := concat("", ["Blocked MCP method: ", input.action.method])
 }
 "#,
         r#"{"blocked_methods": ["tools/call", "resources/write"]}"#,
     );
 
     // tools/call is blocked
-    let mut event = bare_event();
-    event.mcp_method = Some("tools/call".into());
+    let event = mcp_event("tools/call");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("tools/call")));
 
     // resources/write is blocked
-    event.mcp_method = Some("resources/write".into());
+    let event = mcp_event("resources/write");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
     // tools/list is allowed (just audited)
-    event.mcp_method = Some("tools/list".into());
+    let event = mcp_event("tools/list");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
 
-    // No MCP method → allow
+    // No MCP method (bare Network event) -> allow
     assert_eq!(
         engine.evaluate(&bare_event()).unwrap().action,
         Action::Allow
@@ -302,39 +353,51 @@ reasons[r] {
 }
 
 // =====================================================================
-// Scenario 5: Rate limiting — high request rate audit
+// Scenario 5: Bytes threshold — deny large payloads to LLMs
 // =====================================================================
 
 #[test]
-fn scenario_rate_audit() {
+fn scenario_bytes_threshold() {
     let (_dir, mut engine) = engine_with(
         r#"
 package busted
 
 default decision = "allow"
 
-decision = "audit" {
-    input.request_rate > 100
+decision = "deny" {
+    input.action.provider != null
+    input.action.bytes > 1048576
 }
 
 reasons[r] {
-    input.request_rate > 100
-    r := "High request rate detected"
+    input.action.provider != null
+    input.action.bytes > 1048576
+    r := "Payload exceeds 1MB limit for LLM traffic"
 }
 "#,
     );
 
-    let mut event = bare_event();
-    event.request_rate = Some(150.0);
+    let mut event = network_event("OpenAI");
+
+    // Small payload -> allow
+    if let AgenticAction::Network { ref mut bytes, .. } = event.action {
+        *bytes = 1024;
+    }
+    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+
+    // Exactly 1MB -> allow
+    if let AgenticAction::Network { ref mut bytes, .. } = event.action {
+        *bytes = 1_048_576;
+    }
+    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+
+    // Over 1MB -> deny
+    if let AgenticAction::Network { ref mut bytes, .. } = event.action {
+        *bytes = 1_048_577;
+    }
     let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Audit);
-    assert!(d.reasons.iter().any(|r| r.contains("rate")));
-
-    event.request_rate = Some(50.0);
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
-
-    event.request_rate = None;
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("1MB")));
 }
 
 // =====================================================================
@@ -350,35 +413,38 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.provider != null
-    input.container_id != ""
+    input.action.provider != null
+    input.process.container_id != ""
     not container_approved
 }
 
 container_approved {
-    startswith(input.container_id, data.approved_container_prefixes[_])
+    startswith(input.process.container_id, data.approved_container_prefixes[_])
 }
 "#,
         r#"{"approved_container_prefixes": ["abc123", "def456"]}"#,
     );
 
     // Approved container
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.container_id = "abc123deadbeef".into();
+    let mut event = network_event("OpenAI");
+    event.process.container_id = "abc123deadbeef".into();
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
     // Unapproved container
-    event.container_id = "xyz789badcafe".into();
+    event.process.container_id = "xyz789badcafe".into();
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    // No container (bare metal) → allow (container_id is "")
-    event.container_id = String::new();
+    // No container (bare metal) -> allow (container_id is "" which is skipped by serde)
+    // But the Rego checks input.process.container_id != "" which will be false since
+    // the field is absent (skip_serializing_if = "String::is_empty").
+    // Absent field in Rego is treated as undefined, not as "".
+    // So the deny rule body fails at the second condition.
+    event.process.container_id = String::new();
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 7: Model restrictions — block specific models
+// Scenario 7: Model restrictions — block specific models (Prompt action)
 // =====================================================================
 
 #[test]
@@ -390,30 +456,38 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.llm_model == data.blocked_models[_]
+    input.action.model == data.blocked_models[_]
 }
 
 reasons[r] {
-    input.llm_model == data.blocked_models[_]
-    r := concat("", ["Blocked model: ", input.llm_model])
+    input.action.model == data.blocked_models[_]
+    r := concat("", ["Blocked model: ", input.action.model])
 }
 "#,
         r#"{"blocked_models": ["gpt-4o", "claude-3-opus"]}"#,
     );
 
-    let mut event = bare_event();
-    event.llm_model = Some("gpt-4o".into());
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt { ref mut model, .. } = event.action {
+        *model = Some("gpt-4o".into());
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("gpt-4o")));
 
-    event.llm_model = Some("claude-3-opus".into());
+    if let AgenticAction::Prompt { ref mut model, .. } = event.action {
+        *model = Some("claude-3-opus".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    event.llm_model = Some("gpt-3.5-turbo".into());
+    if let AgenticAction::Prompt { ref mut model, .. } = event.action {
+        *model = Some("gpt-3.5-turbo".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.llm_model = None;
+    if let AgenticAction::Prompt { ref mut model, .. } = event.action {
+        *model = None;
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
@@ -430,44 +504,55 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
 }
 
 decision = "audit" {
-    input.provider != null
-    not input.pii_detected
+    input.action.provider != null
+    not input.action.pii_detected
 }
 
 reasons[r] {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
     r := "PII in LLM traffic"
 }
 
 reasons[r] {
-    input.provider != null
-    not input.pii_detected
-    r := concat("", ["Auditing LLM traffic to ", input.provider])
+    input.action.provider != null
+    not input.action.pii_detected
+    r := concat("", ["Auditing LLM traffic to ", input.action.provider])
 }
 "#,
     );
 
-    // PII + provider → deny
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(true);
+    // PII + provider -> deny
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt {
+        ref mut pii_detected,
+        ..
+    } = event.action
+    {
+        *pii_detected = Some(true);
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("PII")));
 
-    // Provider only → audit
-    event.pii_detected = None;
+    // Provider only (no PII) -> audit
+    if let AgenticAction::Prompt {
+        ref mut pii_detected,
+        ..
+    } = event.action
+    {
+        *pii_detected = None;
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("Auditing")));
 
-    // Nothing → allow
+    // Nothing -> allow
     assert_eq!(
         engine.evaluate(&bare_event()).unwrap().action,
         Action::Allow
@@ -488,91 +573,47 @@ default decision = "allow"
 
 # Root processes should not be calling LLMs
 decision = "deny" {
-    input.uid == 0
-    input.provider != null
+    input.process.uid == 0
+    input.action.provider != null
 }
 
 # UID 65534 (nobody) should not access LLMs
 decision = "deny" {
-    input.uid == 65534
-    input.provider != null
+    input.process.uid == 65534
+    input.action.provider != null
 }
 
 reasons[r] {
-    input.uid == 0
-    input.provider != null
+    input.process.uid == 0
+    input.action.provider != null
     r := "Root process accessing LLM API"
 }
 "#,
     );
 
-    // Root + provider → deny
-    let mut event = bare_event();
-    event.uid = 0;
-    event.provider = Some("OpenAI".into());
+    // Root + provider -> deny
+    let mut event = network_event("OpenAI");
+    event.process.uid = 0;
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("Root")));
 
-    // nobody + provider → deny
-    event.uid = 65534;
+    // nobody + provider -> deny
+    event.process.uid = 65534;
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    // Normal user + provider → allow
-    event.uid = 1000;
+    // Normal user + provider -> allow
+    event.process.uid = 1000;
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    // Root but no provider → allow
-    event.uid = 0;
-    event.provider = None;
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+    // Root but no provider -> allow
+    let mut event2 = bare_event();
+    event2.process.uid = 0;
+    assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 10: Bytes threshold — deny large payloads to LLMs
-// =====================================================================
-
-#[test]
-fn scenario_bytes_threshold() {
-    let (_dir, mut engine) = engine_with(
-        r#"
-package busted
-
-default decision = "allow"
-
-decision = "deny" {
-    input.provider != null
-    input.bytes > 1048576
-}
-
-reasons[r] {
-    input.provider != null
-    input.bytes > 1048576
-    r := "Payload exceeds 1MB limit for LLM traffic"
-}
-"#,
-    );
-
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-
-    // Small payload → allow
-    event.bytes = 1024;
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
-
-    // Exactly 1MB → allow
-    event.bytes = 1_048_576;
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
-
-    // Over 1MB → deny
-    event.bytes = 1_048_577;
-    let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Deny);
-    assert!(d.reasons.iter().any(|r| r.contains("1MB")));
-}
-
-// =====================================================================
-// Scenario 11: SDK fingerprint restrictions
+// Scenario 10: SDK restrictions (Prompt action)
 // =====================================================================
 
 #[test]
@@ -584,39 +625,45 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.agent_sdk != null
+    input.action.sdk != null
     not sdk_approved
 }
 
 sdk_approved {
-    input.agent_sdk == data.approved_sdks[_]
+    input.action.sdk == data.approved_sdks[_]
 }
 
 reasons[r] {
-    input.agent_sdk != null
+    input.action.sdk != null
     not sdk_approved
-    r := concat("", ["Unapproved SDK: ", input.agent_sdk])
+    r := concat("", ["Unapproved SDK: ", input.action.sdk])
 }
 "#,
         r#"{"approved_sdks": ["openai-python/1.12.0", "anthropic-python/0.25.0"]}"#,
     );
 
-    let mut event = bare_event();
-    event.agent_sdk = Some("openai-python/1.12.0".into());
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt { ref mut sdk, .. } = event.action {
+        *sdk = Some("openai-python/1.12.0".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.agent_sdk = Some("unknown-sdk/0.1.0".into());
+    if let AgenticAction::Prompt { ref mut sdk, .. } = event.action {
+        *sdk = Some("unknown-sdk/0.1.0".into());
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("unknown-sdk")));
 
-    // No SDK → allow
-    event.agent_sdk = None;
+    // No SDK -> allow
+    if let AgenticAction::Prompt { ref mut sdk, .. } = event.action {
+        *sdk = None;
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 12: SNI-based routing
+// Scenario 11: SNI-based routing (Network action)
 // =====================================================================
 
 #[test]
@@ -628,29 +675,37 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.sni != null
-    input.sni == data.blocked_hosts[_]
+    input.action.sni != null
+    input.action.sni == data.blocked_hosts[_]
 }
 "#,
         r#"{"blocked_hosts": ["api.deepseek.com", "api.together.xyz"]}"#,
     );
 
     let mut event = bare_event();
-    event.sni = Some("api.deepseek.com".into());
+    if let AgenticAction::Network { ref mut sni, .. } = event.action {
+        *sni = Some("api.deepseek.com".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    event.sni = Some("api.together.xyz".into());
+    if let AgenticAction::Network { ref mut sni, .. } = event.action {
+        *sni = Some("api.together.xyz".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    event.sni = Some("api.openai.com".into());
+    if let AgenticAction::Network { ref mut sni, .. } = event.action {
+        *sni = Some("api.openai.com".into());
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.sni = None;
+    if let AgenticAction::Network { ref mut sni, .. } = event.action {
+        *sni = None;
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 13: Port-based restrictions
+// Scenario 12: Port-based restrictions
 // =====================================================================
 
 #[test]
@@ -662,68 +717,40 @@ package busted
 default decision = "allow"
 
 decision = "audit" {
-    input.provider != null
-    input.dst_port != 443
+    input.action.provider != null
+    input.action.dst_port != 443
 }
 
 reasons[r] {
-    input.provider != null
-    input.dst_port != 443
+    input.action.provider != null
+    input.action.dst_port != 443
     r := "LLM traffic on non-standard port"
 }
 "#,
     );
 
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.dst_port = 8443;
+    let mut event = network_event("OpenAI");
+    if let AgenticAction::Network {
+        ref mut dst_port, ..
+    } = event.action
+    {
+        *dst_port = 8443;
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("non-standard")));
 
-    event.dst_port = 443;
+    if let AgenticAction::Network {
+        ref mut dst_port, ..
+    } = event.action
+    {
+        *dst_port = 443;
+    }
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 14: ML confidence threshold for audit
-// =====================================================================
-
-#[test]
-fn scenario_ml_confidence_threshold() {
-    let (_dir, mut engine) = engine_with(
-        r#"
-package busted
-
-default decision = "allow"
-
-decision = "audit" {
-    input.ml_confidence > 0.8
-    input.ml_provider != null
-}
-
-reasons[r] {
-    input.ml_confidence > 0.8
-    input.ml_provider != null
-    r := concat("", ["ML detected LLM traffic to ", input.ml_provider, " with high confidence"])
-}
-"#,
-    );
-
-    let mut event = bare_event();
-    event.ml_confidence = Some(0.95);
-    event.ml_provider = Some("OpenAI".into());
-    let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Audit);
-    assert!(d.reasons.iter().any(|r| r.contains("ML detected")));
-
-    // Low confidence → allow
-    event.ml_confidence = Some(0.5);
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
-}
-
-// =====================================================================
-// Scenario 15: Service account restrictions in Kubernetes
+// Scenario 13: Service account restrictions in Kubernetes
 // =====================================================================
 
 #[test]
@@ -735,33 +762,32 @@ package busted
 default decision = "allow"
 
 decision = "deny" {
-    input.provider != null
-    input.service_account != null
+    input.action.provider != null
+    input.process.service_account != null
     not sa_approved
 }
 
 sa_approved {
-    input.service_account == data.approved_service_accounts[_]
+    input.process.service_account == data.approved_service_accounts[_]
 }
 "#,
         r#"{"approved_service_accounts": ["llm-gateway", "ai-proxy"]}"#,
     );
 
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.service_account = Some("llm-gateway".into());
+    let mut event = network_event("OpenAI");
+    event.process.service_account = Some("llm-gateway".into());
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    event.service_account = Some("random-svc".into());
+    event.process.service_account = Some("random-svc".into());
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-    // No service account → allow (not in k8s)
-    event.service_account = None;
+    // No service account -> allow (not in k8s)
+    event.process.service_account = None;
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 16: Multiple .rego files working together
+// Scenario 14: Multiple .rego files working together
 // =====================================================================
 
 #[test]
@@ -776,8 +802,8 @@ fn scenario_split_policy_files() {
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
 }
 "#,
     );
@@ -789,22 +815,27 @@ decision = "deny" {
         r#"
 package busted
 reasons[r] {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
     r := "PII found — blocked by base policy"
 }
 reasons[r] {
-    input.provider != null
-    r := concat("", ["Provider: ", input.provider])
+    input.action.provider != null
+    r := concat("", ["Provider: ", input.action.provider])
 }
 "#,
     );
 
     let mut engine = PolicyEngine::new(dir.path()).unwrap();
 
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(true);
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt {
+        ref mut pii_detected,
+        ..
+    } = event.action
+    {
+        *pii_detected = Some(true);
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.len() >= 2);
@@ -813,7 +844,7 @@ reasons[r] {
 }
 
 // =====================================================================
-// Scenario 17: Complex data.json with nested structures
+// Scenario 15: Complex data.json with nested structures
 // =====================================================================
 
 #[test]
@@ -827,15 +858,15 @@ default decision = "allow"
 decision = "deny" {
     rule := data.rules[_]
     rule.action == "deny"
-    input.provider == rule.provider
-    input.pod_namespace == rule.namespace
+    input.action.provider == rule.provider
+    input.process.pod_namespace == rule.namespace
 }
 
 reasons[r] {
     rule := data.rules[_]
     rule.action == "deny"
-    input.provider == rule.provider
-    input.pod_namespace == rule.namespace
+    input.action.provider == rule.provider
+    input.process.pod_namespace == rule.namespace
     r := concat("", ["Rule: deny ", rule.provider, " in ", rule.namespace])
 }
 "#,
@@ -847,9 +878,8 @@ reasons[r] {
 }"#,
     );
 
-    let mut event = bare_event();
-    event.provider = Some("DeepSeek".into());
-    event.pod_namespace = Some("production".into());
+    let mut event = network_event("DeepSeek");
+    event.process.pod_namespace = Some("production".into());
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d
@@ -857,22 +887,22 @@ reasons[r] {
         .iter()
         .any(|r| r.contains("DeepSeek") && r.contains("production")));
 
-    // Same provider, different namespace → allow
-    event.pod_namespace = Some("staging".into());
+    // Same provider, different namespace -> allow
+    event.process.pod_namespace = Some("staging".into());
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
-    // Different provider, matching namespace → allow
-    event.provider = Some("OpenAI".into());
-    event.pod_namespace = Some("production".into());
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+    // Different provider, matching namespace -> allow
+    let mut event2 = network_event("OpenAI");
+    event2.process.pod_namespace = Some("production".into());
+    assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Allow);
 
-    // OpenAI in restricted → deny
-    event.pod_namespace = Some("restricted".into());
-    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
+    // OpenAI in restricted -> deny
+    event2.process.pod_namespace = Some("restricted".into());
+    assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Deny);
 }
 
 // =====================================================================
-// Scenario 18: Array comprehension in Rego
+// Scenario 16: Array comprehension in Rego
 // =====================================================================
 
 #[test]
@@ -884,32 +914,31 @@ package busted
 default decision = "allow"
 
 decision = "audit" {
-    arr := [x | x := input.provider; x != null]
+    arr := [x | x := input.action.provider; x != null]
     count(arr) > 0
 }
 
 reasons[r] {
-    arr := [x | x := input.provider; x != null]
+    arr := [x | x := input.action.provider; x != null]
     count(arr) > 0
     r := "Provider found via array comprehension"
 }
 "#,
     );
 
-    // Event with provider → audit
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
+    // Event with provider -> audit
+    let event = network_event("OpenAI");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("comprehension")));
 
-    // No provider → allow
+    // No provider -> allow
     let d2 = engine.evaluate(&bare_event()).unwrap();
     assert_eq!(d2.action, Action::Allow);
 }
 
 // =====================================================================
-// Scenario 19: Nested helper rules
+// Scenario 17: Nested helper rules
 // =====================================================================
 
 #[test]
@@ -941,53 +970,50 @@ _is_llm_bound {
 }
 
 _is_llm_bound {
-    input.content_class == "LlmApi"
+    input.action.type == "Prompt"
 }
 
 # Level 2 helper: has PII
 _has_pii {
-    input.pii_detected == true
+    input.action.pii_detected == true
 }
 
 # Level 3 helper: has any provider
 _has_provider {
-    input.provider != null
-}
-
-_has_provider {
-    input.llm_provider != null
+    input.action.provider != null
 }
 "#,
     );
 
-    // PII + provider → deny (traverses 3 levels of helpers)
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(true);
+    // PII + provider (Prompt) -> deny (traverses 3 levels of helpers)
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt {
+        ref mut pii_detected,
+        ..
+    } = event.action
+    {
+        *pii_detected = Some(true);
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("Sensitive")));
 
-    // PII + content_class LlmApi → deny (different path through helpers)
-    let mut event2 = bare_event();
-    event2.content_class = Some("LlmApi".into());
-    event2.pii_detected = Some(true);
-    let d2 = engine.evaluate(&event2).unwrap();
-    assert_eq!(d2.action, Action::Deny);
+    // PII in Prompt (type == "Prompt" path through _is_llm_bound) -> deny
+    // This is the same as above since Prompt also has a provider.
 
-    // Provider but no PII → allow
-    let mut event3 = bare_event();
-    event3.provider = Some("OpenAI".into());
+    // Provider (Network) but no PII -> allow
+    let event3 = network_event("OpenAI");
     assert_eq!(engine.evaluate(&event3).unwrap().action, Action::Allow);
 
-    // PII but no provider/content_class → allow
-    let mut event4 = bare_event();
-    event4.pii_detected = Some(true);
-    assert_eq!(engine.evaluate(&event4).unwrap().action, Action::Allow);
+    // No provider and no PII -> allow
+    assert_eq!(
+        engine.evaluate(&bare_event()).unwrap().action,
+        Action::Allow
+    );
 }
 
 // =====================================================================
-// Scenario 20: Multiple packages — only package busted is evaluated
+// Scenario 18: Multiple packages — only package busted is evaluated
 // =====================================================================
 
 #[test]
@@ -1002,7 +1028,7 @@ fn scenario_multiple_packages_only_busted_evaluated() {
 package busted
 default decision = "allow"
 decision = "audit" {
-    input.provider != null
+    input.action.provider != null
 }
 "#,
     );
@@ -1030,14 +1056,13 @@ decision = "deny" {
         "non-busted package should not affect decision"
     );
 
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
+    let event = network_event("OpenAI");
     let d2 = engine.evaluate(&event).unwrap();
     assert_eq!(d2.action, Action::Audit, "busted package audit should work");
 }
 
 // =====================================================================
-// Scenario 21: Special JSON characters in event fields
+// Scenario 19: Special JSON characters in event fields
 // =====================================================================
 
 #[test]
@@ -1046,28 +1071,32 @@ fn scenario_special_json_chars_in_fields() {
         r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-reasons[r] { input.provider != null; r := concat("", ["Provider: ", input.provider]) }
+decision = "audit" { input.action.provider != null }
+reasons[r] { input.action.provider != null; r := concat("", ["Provider: ", input.action.provider]) }
 "#,
     );
 
     // Provider with quotes and backslashes
     let mut event = bare_event();
-    event.provider = Some("Open\"AI\\Test\nLine".into());
+    if let AgenticAction::Network {
+        ref mut provider, ..
+    } = event.action
+    {
+        *provider = Some("Open\"AI\\Test\nLine".into());
+    }
     let d = engine.evaluate(&event);
     assert!(d.is_ok(), "special chars should not cause evaluation error");
     assert_eq!(d.unwrap().action, Action::Audit);
 
     // Process name with special chars
-    let mut event2 = bare_event();
-    event2.process_name = "my\"proc\\name".into();
-    event2.provider = Some("Normal".into());
+    let mut event2 = network_event("Normal");
+    event2.process.name = "my\"proc\\name".into();
     let d2 = engine.evaluate(&event2);
     assert!(d2.is_ok(), "special chars in process_name should not error");
 }
 
 // =====================================================================
-// Scenario 22: All 42 fields populated with non-default values
+// Scenario 20: All action variants populated with non-default values
 // =====================================================================
 
 #[test]
@@ -1076,63 +1105,56 @@ fn scenario_all_fields_populated() {
         r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-reasons[r] { input.provider != null; r := concat("", ["Provider: ", input.provider]) }
-reasons[r] { input.mcp_method != null; r := concat("", ["MCP: ", input.mcp_method]) }
-reasons[r] { input.llm_provider != null; r := concat("", ["LLM: ", input.llm_provider]) }
+decision = "audit" { input.action.provider != null }
+reasons[r] { input.action.provider != null; r := concat("", ["Provider: ", input.action.provider]) }
+reasons[r] { input.action.method != null; r := concat("", ["MCP: ", input.action.method]) }
 "#,
     );
 
-    let event = ProcessedEvent {
-        event_type: "TLS_DATA_WRITE".into(),
+    let event = BustedEvent {
         timestamp: "23:59:59.999".into(),
-        pid: 99999,
-        uid: 65534,
-        process_name: "full-test-binary".into(),
-        src_ip: "192.168.100.200".into(),
-        src_port: 60000,
-        dst_ip: "203.0.113.50".into(),
-        dst_port: 8443,
-        bytes: 999_999,
-        provider: Some("Anthropic".into()),
+        process: ProcessInfo {
+            pid: 99999,
+            uid: 65534,
+            name: "full-test-binary".into(),
+            container_id: "abc123def456".into(),
+            cgroup_id: 12345678,
+            pod_name: Some("ai-gateway-pod-xyz".into()),
+            pod_namespace: Some("ml-production".into()),
+            service_account: Some("ai-service-account".into()),
+        },
+        session_id: "99999:abc".into(),
+        identity: Some(IdentityInfo {
+            id: 42,
+            instance: "test-instance".into(),
+            confidence: 0.95,
+            match_type: Some("exact".into()),
+            narrative: Some("Test narrative".into()),
+            timeline: None,
+            timeline_len: Some(10),
+            prompt_fingerprint: Some(0xdeadbeef),
+            behavioral_digest: Some(0xcafebabe),
+            capability_hash: Some(0x12345678),
+            graph_node_count: Some(5),
+            graph_edge_count: Some(8),
+        }),
         policy: Some("custom-policy-v2".into()),
-        container_id: "abc123def456".into(),
-        cgroup_id: 12345678,
-        request_rate: Some(42.5),
-        session_bytes: Some(1_000_000),
-        pod_name: Some("ai-gateway-pod-xyz".into()),
-        pod_namespace: Some("ml-production".into()),
-        service_account: Some("ai-service-account".into()),
-        ml_confidence: Some(0.99),
-        ml_provider: Some("Anthropic".into()),
-        behavior_class: Some("llm_api_call".into()),
-        cluster_id: Some(7),
-        sni: Some("api.anthropic.com".into()),
-        tls_protocol: Some("TLSv1.3".into()),
-        tls_details: Some("ECDHE-RSA-AES256-GCM-SHA384".into()),
-        tls_payload: Some("POST /v1/messages HTTP/1.1".into()),
-        content_class: Some("LlmApi".into()),
-        llm_provider: Some("Anthropic".into()),
-        llm_endpoint: Some("/v1/messages".into()),
-        llm_model: Some("claude-3-opus".into()),
-        mcp_method: Some("tools/call".into()),
-        mcp_category: Some("tool_execution".into()),
-        agent_sdk: Some("anthropic-python/0.25.0".into()),
-        agent_fingerprint: Some(0xabc123),
-        classifier_confidence: Some(0.98),
-        pii_detected: Some(false),
-        llm_user_message: Some("Hello world".into()),
-        llm_system_prompt: Some("You are a helpful assistant".into()),
-        llm_messages_json: Some(r#"[{"role":"user","content":"hi"}]"#.into()),
-        llm_stream: Some(false),
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: None,
-        agent_model_hash: None,
+        action: AgenticAction::Prompt {
+            provider: "Anthropic".into(),
+            model: Some("claude-3-opus".into()),
+            user_message: Some("Hello world".into()),
+            system_prompt: Some("You are a helpful assistant".into()),
+            stream: false,
+            sdk: Some("anthropic-python/0.25.0".into()),
+            bytes: 999_999,
+            sni: Some("api.anthropic.com".into()),
+            endpoint: Some("/v1/messages".into()),
+            fingerprint: Some(0xabc123),
+            pii_detected: Some(false),
+            confidence: Some(0.98),
+            sdk_hash: None,
+            model_hash: None,
+        },
     };
 
     let d = engine.evaluate(&event).unwrap();
@@ -1144,7 +1166,7 @@ reasons[r] { input.llm_provider != null; r := concat("", ["LLM: ", input.llm_pro
 }
 
 // =====================================================================
-// Scenario 23: Many rapid sequential evaluations
+// Scenario 21: Many rapid sequential evaluations
 // =====================================================================
 
 #[test]
@@ -1153,18 +1175,29 @@ fn scenario_many_rapid_evaluations() {
         r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pii_detected == true }
-reasons[r] { input.pii_detected == true; r := "PII detected" }
+decision = "deny" { input.action.pii_detected == true }
+reasons[r] { input.action.pii_detected == true; r := "PII detected" }
 "#,
     );
 
-    for i in 0..1000 {
-        let mut event = bare_event();
-        event.pid = i;
+    for i in 0..1000u32 {
         let has_pii = i % 7 == 0;
-        if has_pii {
-            event.pii_detected = Some(true);
-        }
+        let event = if has_pii {
+            let mut e = prompt_event("OpenAI");
+            e.process.pid = i;
+            if let AgenticAction::Prompt {
+                ref mut pii_detected,
+                ..
+            } = e.action
+            {
+                *pii_detected = Some(true);
+            }
+            e
+        } else {
+            let mut e = bare_event();
+            e.process.pid = i;
+            e
+        };
         let d = engine.evaluate(&event).unwrap();
         let expected = if has_pii { Action::Deny } else { Action::Allow };
         assert_eq!(
@@ -1176,7 +1209,7 @@ reasons[r] { input.pii_detected == true; r := "PII detected" }
 }
 
 // =====================================================================
-// Scenario 24: Large data.json with 1000 entries
+// Scenario 22: Large data.json with 1000 entries
 // =====================================================================
 
 #[test]
@@ -1190,29 +1223,28 @@ fn scenario_large_data_json() {
 package busted
 default decision = "deny"
 decision = "allow" {
-    input.provider == data.providers[_]
+    input.action.provider == data.providers[_]
 }
 "#,
         &data,
     );
 
     // Match a provider in the middle of the list
-    let mut event = bare_event();
-    event.provider = Some("provider_500".into());
+    let event = network_event("provider_500");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Allow);
 
     // Match the last provider
-    event.provider = Some("provider_999".into());
+    let event = network_event("provider_999");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
 
     // No match
-    event.provider = Some("provider_9999".into());
+    let event = network_event("provider_9999");
     assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 }
 
 // =====================================================================
-// Scenario 25: Set operations in Rego
+// Scenario 23: Set operations in Rego
 // =====================================================================
 
 #[test]
@@ -1225,15 +1257,15 @@ default decision = "allow"
 
 # Collect the set of tags that apply to this event
 tags[t] {
-    input.provider != null
+    input.action.provider != null
     t := "has_provider"
 }
 tags[t] {
-    input.pii_detected == true
+    input.action.pii_detected == true
     t := "has_pii"
 }
 tags[t] {
-    input.mcp_method != null
+    input.action.method != null
     t := "has_mcp"
 }
 
@@ -1259,25 +1291,94 @@ reasons[r] {
         r#"{"watched_tags": ["has_provider", "has_mcp"]}"#,
     );
 
-    // Provider + PII → deny (set intersection: both tags present)
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(true);
+    // Provider + PII (Prompt) -> deny (set intersection: both tags present)
+    let mut event = prompt_event("OpenAI");
+    if let AgenticAction::Prompt {
+        ref mut pii_detected,
+        ..
+    } = event.action
+    {
+        *pii_detected = Some(true);
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("set membership")));
 
-    // Provider only → audit (watched tag matches)
-    let mut event2 = bare_event();
-    event2.provider = Some("OpenAI".into());
+    // Provider only (Network) -> audit (watched tag matches)
+    let event2 = network_event("OpenAI");
     assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Audit);
 
-    // MCP only → audit (watched tag matches)
-    let mut event3 = bare_event();
-    event3.mcp_method = Some("tools/call".into());
+    // MCP only -> audit (watched tag matches)
+    let event3 = mcp_event("tools/call");
     assert_eq!(engine.evaluate(&event3).unwrap().action, Action::Audit);
 
-    // Nothing → allow
+    // Nothing -> allow
+    assert_eq!(
+        engine.evaluate(&bare_event()).unwrap().action,
+        Action::Allow
+    );
+}
+
+// =====================================================================
+// Scenario 24: Identity-based restrictions
+// =====================================================================
+
+#[test]
+fn scenario_identity_restrictions() {
+    let (_dir, mut engine) = engine_with(
+        r#"
+package busted
+
+default decision = "allow"
+
+decision = "deny" {
+    input.identity
+    input.identity.timeline_len > 100
+}
+
+decision = "audit" {
+    input.identity
+    input.identity.confidence > 0.8
+    not long_timeline
+}
+
+long_timeline {
+    input.identity.timeline_len > 100
+}
+
+reasons[r] {
+    input.identity
+    input.identity.timeline_len > 100
+    r := "Identity has suspiciously long timeline"
+}
+"#,
+    );
+
+    // Identity with high confidence -> audit
+    let mut event = network_event("OpenAI");
+    event.identity = Some(IdentityInfo {
+        id: 42,
+        instance: "test".into(),
+        confidence: 0.95,
+        match_type: None,
+        narrative: None,
+        timeline: None,
+        timeline_len: Some(10),
+        prompt_fingerprint: None,
+        behavioral_digest: None,
+        capability_hash: None,
+        graph_node_count: None,
+        graph_edge_count: None,
+    });
+    assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
+
+    // Identity with long timeline -> deny
+    event.identity.as_mut().unwrap().timeline_len = Some(150);
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("timeline")));
+
+    // No identity -> allow
     assert_eq!(
         engine.evaluate(&bare_event()).unwrap().action,
         Action::Allow

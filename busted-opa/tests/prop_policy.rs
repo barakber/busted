@@ -1,13 +1,13 @@
 //! Property-based tests for the OPA policy engine.
 //!
 //! These verify invariants that must hold regardless of input:
-//! - `evaluate()` never panics on any valid `ProcessedEvent`
+//! - `evaluate()` never panics on any valid `BustedEvent`
 //! - The action is always one of Allow, Audit, Deny
 //! - Evaluation is deterministic
 //! - Sequential evaluations are independent
 
 use busted_opa::{Action, PolicyEngine};
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{AgenticAction, BustedEvent, NetworkEventKind, ProcessInfo};
 use proptest::prelude::*;
 use std::io::Write;
 use std::path::Path;
@@ -30,136 +30,147 @@ fn optional_provider() -> impl Strategy<Value = Option<String>> {
     ]
 }
 
+fn provider_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("OpenAI".to_string()),
+        Just("Anthropic".to_string()),
+        Just("Google".to_string()),
+        Just("Azure".to_string()),
+        Just("Cohere".to_string()),
+        Just("Mistral".to_string()),
+        Just("DeepSeek".to_string()),
+        "[a-zA-Z]{3,20}",
+    ]
+}
+
 fn optional_bool() -> impl Strategy<Value = Option<bool>> {
     prop_oneof![Just(None), Just(Some(true)), Just(Some(false)),]
 }
 
-fn event_type_strategy() -> impl Strategy<Value = String> {
+fn network_event_kind_strategy() -> impl Strategy<Value = NetworkEventKind> {
     prop_oneof![
-        Just("TCP_CONNECT".to_string()),
-        Just("TCP_SENDMSG".to_string()),
-        Just("TCP_RECVMSG".to_string()),
-        Just("TCP_CLOSE".to_string()),
-        Just("TLS_DATA_WRITE".to_string()),
-        Just("TLS_DATA_READ".to_string()),
-        Just("UDP_SENDMSG".to_string()),
+        Just(NetworkEventKind::Connect),
+        Just(NetworkEventKind::Close),
+        Just(NetworkEventKind::DataSent),
+        Just(NetworkEventKind::DataReceived),
+        Just(NetworkEventKind::DnsQuery),
     ]
 }
 
-fn content_class_strategy() -> impl Strategy<Value = Option<String>> {
+fn mcp_method_strategy() -> impl Strategy<Value = String> {
     prop_oneof![
-        Just(None),
-        Just(Some("LlmApi".to_string())),
-        Just(Some("Mcp".to_string())),
-        Just(Some("GenericHttp".to_string())),
-        Just(Some("LlmStream".to_string())),
+        Just("tools/call".to_string()),
+        Just("tools/list".to_string()),
+        Just("resources/read".to_string()),
+        Just("initialize".to_string()),
     ]
 }
 
-fn mcp_method_strategy() -> impl Strategy<Value = Option<String>> {
-    prop_oneof![
-        Just(None),
-        Just(Some("tools/call".to_string())),
-        Just(Some("tools/list".to_string())),
-        Just(Some("resources/read".to_string())),
-        Just(Some("initialize".to_string())),
-    ]
-}
-
-/// Strategy that generates arbitrary ProcessedEvents with realistic field values.
-/// Uses nested tuples to stay within proptest's 12-element tuple limit.
-fn processed_event_strategy() -> impl Strategy<Value = ProcessedEvent> {
+fn process_info_strategy() -> impl Strategy<Value = ProcessInfo> {
     (
-        // Group 1: core fields (10 elements)
-        (
-            event_type_strategy(),
-            any::<u32>(),                                                        // pid
-            any::<u32>(),                                                        // uid
-            "[a-z]{1,15}".prop_map(|s| s.to_string()),                           // process_name
-            prop_oneof![Just(80u16), Just(443u16), Just(8080u16), any::<u16>()], // dst_port
-            0u64..1_000_000,                                                     // bytes
-            optional_provider(),                                                 // provider
-            optional_bool(),                                                     // pii_detected
-            content_class_strategy(),                                            // content_class
-            optional_provider(),                                                 // llm_provider
-        ),
-        // Group 2: optional fields (2 elements)
-        (
-            mcp_method_strategy(), // mcp_method
-            prop_oneof![
-                Just(None),
-                Just(Some("production".to_string())),
-                Just(Some("staging".to_string())),
-                "[a-z]{3,12}".prop_map(Some)
-            ], // pod_namespace
-        ),
+        any::<u32>(),                              // pid
+        any::<u32>(),                              // uid
+        "[a-z]{1,15}".prop_map(|s| s.to_string()), // name
+        prop_oneof![
+            Just(None),
+            Just(Some("production".to_string())),
+            Just(Some("staging".to_string())),
+            "[a-z]{3,12}".prop_map(Some)
+        ], // pod_namespace
     )
-        .prop_map(|(core, extra)| {
-            let (
-                event_type,
-                pid,
-                uid,
-                process_name,
-                dst_port,
-                bytes,
-                provider,
-                pii_detected,
-                content_class,
-                llm_provider,
-            ) = core;
-            let (mcp_method, pod_namespace) = extra;
-            ProcessedEvent {
-                event_type,
-                timestamp: "12:34:56.789".into(),
-                pid,
-                uid,
-                process_name,
+        .prop_map(|(pid, uid, name, pod_namespace)| ProcessInfo {
+            pid,
+            uid,
+            name,
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace,
+            service_account: None,
+        })
+}
+
+fn agentic_action_strategy() -> impl Strategy<Value = AgenticAction> {
+    prop_oneof![
+        // Network action (most common)
+        (
+            network_event_kind_strategy(),
+            prop_oneof![Just(80u16), Just(443u16), Just(8080u16), any::<u16>()],
+            0u64..1_000_000,
+            optional_provider(),
+        )
+            .prop_map(|(kind, dst_port, bytes, provider)| AgenticAction::Network {
+                kind,
                 src_ip: "10.0.0.1".into(),
                 src_port: 45000,
                 dst_ip: "104.18.1.1".into(),
                 dst_port,
                 bytes,
-                provider,
-                policy: None,
-                container_id: String::new(),
-                cgroup_id: 0,
-                request_rate: None,
-                session_bytes: None,
-                pod_name: None,
-                pod_namespace,
-                service_account: None,
-                ml_confidence: None,
-                ml_provider: None,
-                behavior_class: None,
-                cluster_id: None,
                 sni: None,
-                tls_protocol: None,
-                tls_details: None,
-                tls_payload: None,
-                content_class,
-                llm_provider,
-                llm_endpoint: None,
-                llm_model: None,
-                mcp_method,
-                mcp_category: None,
-                agent_sdk: None,
-                agent_fingerprint: None,
-                classifier_confidence: None,
+                provider,
+            }),
+        // Prompt action
+        (provider_strategy(), optional_bool(), 0u64..1_000_000,).prop_map(
+            |(provider, pii_detected, bytes)| AgenticAction::Prompt {
+                provider,
+                model: None,
+                user_message: None,
+                system_prompt: None,
+                stream: false,
+                sdk: None,
+                bytes,
+                sni: None,
+                endpoint: None,
+                fingerprint: None,
                 pii_detected,
-                llm_user_message: None,
-                llm_system_prompt: None,
-                llm_messages_json: None,
-                llm_stream: None,
-                identity_id: None,
-                identity_instance: None,
-                identity_confidence: None,
-                identity_narrative: None,
-                identity_timeline: None,
-                identity_timeline_len: None,
-                agent_sdk_hash: None,
-                agent_model_hash: None,
+                confidence: None,
+                sdk_hash: None,
+                model_hash: None,
             }
-        })
+        ),
+        // McpRequest action
+        mcp_method_strategy().prop_map(|method| AgenticAction::McpRequest {
+            method,
+            category: None,
+            params_preview: None,
+        }),
+        // Response action
+        provider_strategy().prop_map(|provider| AgenticAction::Response {
+            provider,
+            model: None,
+            bytes: 512,
+            sni: None,
+            confidence: None,
+        }),
+    ]
+}
+
+/// Strategy that generates arbitrary BustedEvents with realistic field values.
+fn busted_event_strategy() -> impl Strategy<Value = BustedEvent> {
+    (process_info_strategy(), agentic_action_strategy()).prop_map(|(process, action)| {
+        let session_id = format!("{}:test", process.pid);
+        BustedEvent {
+            timestamp: "12:34:56.789".into(),
+            process,
+            session_id,
+            identity: None,
+            policy: None,
+            action,
+        }
+    })
+}
+
+/// Helper: extract provider from any action variant (returns Option).
+fn event_provider(event: &BustedEvent) -> Option<&str> {
+    event.provider()
+}
+
+/// Helper: extract pii_detected from Prompt action (returns Option<bool>).
+fn event_pii(event: &BustedEvent) -> Option<bool> {
+    match &event.action {
+        AgenticAction::Prompt { pii_detected, .. } => *pii_detected,
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +191,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn never_panics_allow_all(event in processed_event_strategy()) {
+    fn never_panics_allow_all(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"package busted
 default decision = "allow"
@@ -199,7 +210,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn never_panics_deny_all(event in processed_event_strategy()) {
+    fn never_panics_deny_all(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"package busted
 default decision = "deny"
@@ -219,25 +230,25 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn never_panics_conditional_policy(event in processed_event_strategy()) {
+    fn never_panics_conditional_policy(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
 }
 decision = "audit" {
-    input.provider != null
-    not input.pii_detected
+    input.action.provider != null
+    not input.action.pii_detected
 }
 reasons[r] {
-    input.provider != null
-    r := concat("", ["Provider: ", input.provider])
+    input.action.provider != null
+    r := concat("", ["Provider: ", input.action.provider])
 }
 reasons[r] {
-    input.pii_detected == true
+    input.action.pii_detected == true
     r := "PII"
 }
 "#);
@@ -255,13 +266,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn action_always_valid(event in processed_event_strategy()) {
+    fn action_always_valid(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-decision = "deny" { input.pii_detected == true; input.provider != null }
+decision = "audit" { input.action.provider != null }
+decision = "deny" { input.action.pii_detected == true; input.action.provider != null }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
@@ -278,14 +289,14 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
     #[test]
-    fn evaluation_is_deterministic(event in processed_event_strategy()) {
+    fn evaluation_is_deterministic(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null; not input.pii_detected }
-decision = "deny" { input.pii_detected == true; input.provider != null }
-reasons[r] { input.provider != null; r := "provider" }
+decision = "audit" { input.action.provider != null; not input.action.pii_detected }
+decision = "deny" { input.action.pii_detected == true; input.action.provider != null }
+reasons[r] { input.action.provider != null; r := "provider" }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d1 = engine.evaluate(&event).unwrap();
@@ -309,25 +320,25 @@ proptest! {
 
     #[test]
     fn sequential_independence(
-        events in proptest::collection::vec(processed_event_strategy(), 2..10)
+        events in proptest::collection::vec(busted_event_strategy(), 2..10)
     ) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pii_detected == true }
+decision = "deny" { input.action.pii_detected == true }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         for event in &events {
             let d = engine.evaluate(event).unwrap();
-            let expected = if event.pii_detected == Some(true) {
+            let expected = if event_pii(event) == Some(true) {
                 Action::Deny
             } else {
                 Action::Allow
             };
             prop_assert_eq!(d.action, expected,
                 "event with pii_detected={:?} should be {:?}",
-                event.pii_detected, expected);
+                event_pii(event), expected);
         }
     }
 }
@@ -340,7 +351,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
     #[test]
-    fn empty_dir_always_allows(event in processed_event_strategy()) {
+    fn empty_dir_always_allows(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
@@ -357,14 +368,14 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
     #[test]
-    fn reasons_are_non_empty_strings(event in processed_event_strategy()) {
+    fn reasons_are_non_empty_strings(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
-reasons[r] { input.pii_detected == true; r := "PII detected" }
-reasons[r] { input.mcp_method != null; r := concat("", ["MCP: ", input.mcp_method]) }
+reasons[r] { input.action.provider != null; r := concat("", ["P: ", input.action.provider]) }
+reasons[r] { input.action.pii_detected == true; r := "PII detected" }
+reasons[r] { input.action.method != null; r := concat("", ["MCP: ", input.action.method]) }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
@@ -390,7 +401,7 @@ proptest! {
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "deny"
-decision = "allow" { input.provider == data.ok[_] }
+decision = "allow" { input.action.provider == data.ok[_] }
 "#);
         let data = if in_list {
             format!(r#"{{"ok": ["{provider}"]}}"#)
@@ -400,31 +411,31 @@ decision = "allow" { input.provider == data.ok[_] }
         std::fs::write(dir.path().join("data.json"), &data).unwrap();
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
 
-        let event = ProcessedEvent {
-            event_type: "TCP_CONNECT".into(),
+        let event = BustedEvent {
             timestamp: "00:00:00.000".into(),
-            pid: 1, uid: 0,
-            process_name: "test".into(),
-            src_ip: "0.0.0.0".into(), src_port: 0,
-            dst_ip: "0.0.0.0".into(), dst_port: 443,
-            bytes: 0,
-            provider: Some(provider),
+            process: ProcessInfo {
+                pid: 1,
+                uid: 0,
+                name: "test".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1:net".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None, session_bytes: None,
-            pod_name: None, pod_namespace: None, service_account: None,
-            ml_confidence: None, ml_provider: None, behavior_class: None, cluster_id: None,
-            sni: None, tls_protocol: None, tls_details: None, tls_payload: None,
-            content_class: None, llm_provider: None, llm_endpoint: None, llm_model: None,
-            mcp_method: None, mcp_category: None, agent_sdk: None, agent_fingerprint: None,
-            classifier_confidence: None, pii_detected: None,
-            llm_user_message: None, llm_system_prompt: None,
-            llm_messages_json: None, llm_stream: None,
-            identity_id: None, identity_instance: None,
-            identity_confidence: None, identity_narrative: None,
-            identity_timeline: None, identity_timeline_len: None,
-            agent_sdk_hash: None, agent_model_hash: None,
+            action: AgenticAction::Network {
+                kind: NetworkEventKind::Connect,
+                src_ip: "0.0.0.0".into(),
+                src_port: 0,
+                dst_ip: "0.0.0.0".into(),
+                dst_port: 443,
+                bytes: 0,
+                sni: None,
+                provider: Some(provider),
+            },
         };
 
         let d = engine.evaluate(&event).unwrap();
@@ -444,19 +455,19 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn pii_deny_correctness(event in processed_event_strategy()) {
+    fn pii_deny_correctness(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.provider != null
 }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
-        if event.pii_detected == Some(true) && event.provider.is_some() {
+        if event_pii(&event) == Some(true) && event_provider(&event).is_some() {
             prop_assert_eq!(d.action, Action::Deny);
         } else {
             prop_assert_eq!(d.action, Action::Allow);
@@ -472,18 +483,18 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
     #[test]
-    fn provider_audit_correctness(event in processed_event_strategy()) {
+    fn provider_audit_correctness(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
 decision = "audit" {
-    input.provider != null
+    input.action.provider != null
 }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
-        if event.provider.is_some() {
+        if event_provider(&event).is_some() {
             prop_assert_eq!(d.action, Action::Audit);
         } else {
             prop_assert_eq!(d.action, Action::Allow);
@@ -500,15 +511,15 @@ proptest! {
 
     #[test]
     fn commutativity_evaluation_order(
-        event_a in processed_event_strategy(),
-        event_b in processed_event_strategy(),
+        event_a in busted_event_strategy(),
+        event_b in busted_event_strategy(),
     ) {
         let rego = r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-decision = "deny" { input.pii_detected == true; input.provider != null }
-reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+decision = "audit" { input.action.provider != null }
+decision = "deny" { input.action.pii_detected == true; input.action.provider != null }
+reasons[r] { input.action.provider != null; r := concat("", ["P: ", input.action.provider]) }
 "#;
         // Evaluate A then B
         let dir1 = tempfile::tempdir().unwrap();
@@ -552,14 +563,14 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
     #[test]
-    fn reload_stability_unchanged_dir(event in processed_event_strategy()) {
+    fn reload_stability_unchanged_dir(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-decision = "deny" { input.pii_detected == true; input.provider != null }
-reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+decision = "audit" { input.action.provider != null }
+decision = "deny" { input.action.pii_detected == true; input.action.provider != null }
+reasons[r] { input.action.provider != null; r := concat("", ["P: ", input.action.provider]) }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d1 = engine.evaluate(&event).unwrap();
@@ -583,13 +594,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     #[test]
-    fn from_rego_equivalence(event in processed_event_strategy()) {
+    fn from_rego_equivalence(event in busted_event_strategy()) {
         let source = r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-decision = "deny" { input.pii_detected == true; input.provider != null }
-reasons[r] { input.provider != null; r := concat("", ["P: ", input.provider]) }
+decision = "audit" { input.action.provider != null }
+decision = "deny" { input.action.pii_detected == true; input.action.provider != null }
+reasons[r] { input.action.provider != null; r := concat("", ["P: ", input.action.provider]) }
 "#;
         // File-based engine
         let dir = tempfile::tempdir().unwrap();
@@ -627,35 +638,35 @@ proptest! {
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.provider != null }
-reasons[r] { input.provider != null; r := "has provider" }
+decision = "audit" { input.action.provider != null }
+reasons[r] { input.action.provider != null; r := "has provider" }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
-        let event = ProcessedEvent {
-            event_type: "TCP_CONNECT".into(),
+        let event = BustedEvent {
             timestamp: "00:00:00.000".into(),
-            pid: 1, uid: 0,
-            process_name,
-            src_ip: "0.0.0.0".into(), src_port: 0,
-            dst_ip: "0.0.0.0".into(), dst_port: 443,
-            bytes: 0,
-            provider: Some(provider),
+            process: ProcessInfo {
+                pid: 1,
+                uid: 0,
+                name: process_name,
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1:net".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None, session_bytes: None,
-            pod_name: None, pod_namespace: None, service_account: None,
-            ml_confidence: None, ml_provider: None, behavior_class: None, cluster_id: None,
-            sni: None, tls_protocol: None, tls_details: None, tls_payload: None,
-            content_class: None, llm_provider: None, llm_endpoint: None, llm_model: None,
-            mcp_method: None, mcp_category: None, agent_sdk: None, agent_fingerprint: None,
-            classifier_confidence: None, pii_detected: None,
-            llm_user_message: None, llm_system_prompt: None,
-            llm_messages_json: None, llm_stream: None,
-            identity_id: None, identity_instance: None,
-            identity_confidence: None, identity_narrative: None,
-            identity_timeline: None, identity_timeline_len: None,
-            agent_sdk_hash: None, agent_model_hash: None,
+            action: AgenticAction::Network {
+                kind: NetworkEventKind::Connect,
+                src_ip: "0.0.0.0".into(),
+                src_port: 0,
+                dst_ip: "0.0.0.0".into(),
+                dst_port: 443,
+                bytes: 0,
+                sni: None,
+                provider: Some(provider),
+            },
         };
         let result = engine.evaluate(&event);
         prop_assert!(result.is_ok(), "evaluate errored on special chars: {:?}", result.err());
@@ -670,19 +681,19 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     #[test]
-    fn deny_always_overrides_audit(event in processed_event_strategy()) {
+    fn deny_always_overrides_audit(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         // Policy with ONLY deny rule, no audit rule at all
         write_rego(dir.path(), "p.rego", r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.provider != null
+    input.action.provider != null
 }
 "#);
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         let d = engine.evaluate(&event).unwrap();
-        if event.provider.is_some() {
+        if event_provider(&event).is_some() {
             prop_assert_eq!(d.action, Action::Deny,
                 "event with provider should be denied");
         } else {
@@ -700,7 +711,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
     #[test]
-    fn empty_dir_after_reload(event in processed_event_strategy()) {
+    fn empty_dir_after_reload(event in busted_event_strategy()) {
         let dir = tempfile::tempdir().unwrap();
         write_rego(dir.path(), "p.rego", r#"
 package busted

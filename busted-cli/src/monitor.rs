@@ -22,6 +22,7 @@ pub fn run(args: MonitorArgs) -> Result<()> {
             policy_dir: args.policy_dir,
             policy_rule: args.rule,
             metrics_port: args.metrics_port,
+            identity_store_path: args.identity_store_path,
         };
 
         let rt = tokio::runtime::Runtime::new()?;

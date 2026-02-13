@@ -1,10 +1,8 @@
-.PHONY: build build-release build-ebpf build-agent build-cli build-ui build-ml run run-release run-text clean check clippy fmt test docs install uninstall docker-build helm-lint helm-test helm-e2e help
-
-AGENT_FEATURES ?=
+.PHONY: build build-release build-ebpf build-tui build-ui run run-release run-tui run-tui-demo run-ui run-ui-live clean check clippy fmt test docs install uninstall docker-build helm-lint helm-test helm-e2e help
 
 ## Build targets ---------------------------------------------------------------
 
-build: ## Build everything (eBPF + CLI with all features)
+build: ## Build everything (eBPF + userspace)
 	cargo xtask build
 
 build-release: ## Build everything in release mode
@@ -13,47 +11,35 @@ build-release: ## Build everything in release mode
 build-ebpf: ## Build only the eBPF programs
 	cargo xtask build-ebpf
 
-build-agent: ## Build only the standalone agent binary
-	cargo build -p busted-agent $(if $(AGENT_FEATURES),--features $(AGENT_FEATURES),)
+build-tui: ## Build the terminal dashboard
+	cargo build -p busted-tui
 
-build-cli: ## Build the unified CLI with full features
-	cargo build -p busted --features full
-
-build-ui: ## Build the egui dashboard
+build-ui: ## Build the GUI dashboard
 	cargo build -p busted-ui
-
-build-ml: ## Build the agent with ML behavioral classifier
-	cargo build -p busted-agent --features ml
-
-build-k8s: ## Build the agent with Kubernetes enrichment
-	cargo build -p busted-agent --features k8s
-
-build-all-features: ## Build the CLI with all optional features
-	cargo build -p busted --features full
 
 ## Run targets -----------------------------------------------------------------
 
-run: build ## Build and run the monitoring agent
+run: build ## Build and run the monitoring agent (needs sudo)
 	sudo ./target/debug/busted monitor
 
-run-release: build-release ## Build and run in release mode
+run-release: build-release ## Build and run in release mode (needs sudo)
 	sudo ./target/release/busted monitor
 
-run-verbose: build ## Build and run with verbose logging
-	sudo ./target/debug/busted monitor --verbose
+run-tui: build-tui ## Run the terminal dashboard (live mode)
+	./target/debug/busted-tui
 
-run-text: build ## Build and run with high-level action output (default text format)
-	sudo ./target/debug/busted monitor --format text
+run-tui-demo: build-tui ## Run the terminal dashboard (demo mode)
+	./target/debug/busted-tui --demo
 
-run-json: build ## Build and run with JSON output
-	sudo ./target/debug/busted monitor --format json
+run-ui: build-ui ## Run the GUI dashboard (demo mode)
+	./target/debug/busted-ui --demo
 
-run-ui: build ## Run the dashboard UI
-	./target/debug/busted ui
+run-ui-live: build-ui ## Run the GUI dashboard (live mode)
+	./target/debug/busted-ui
 
 ## Quality targets -------------------------------------------------------------
 
-check: ## Type-check all crates (no codegen)
+check: ## Type-check all crates
 	cargo check --workspace --exclude busted-ebpf
 	cargo check -p busted --features full
 
@@ -63,9 +49,6 @@ clippy: ## Run clippy lints
 
 fmt: ## Format all code
 	cargo fmt --all
-
-fmt-check: ## Check formatting without modifying
-	cargo fmt --all -- --check
 
 test: ## Run all tests
 	cargo test --workspace --exclude busted-ebpf
@@ -79,20 +62,18 @@ docs: ## Build rustdoc + landing page locally
 	cp busted.gif docs/busted.gif 2>/dev/null || true
 	touch docs/.nojekyll
 
-## Install targets -------------------------------------------------------------
+## Install / Deploy ------------------------------------------------------------
 
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 
 install: ## Install busted to $(BINDIR) (run make build-release first)
-	@test -f target/release/busted || { echo "Error: target/release/busted not found. Run 'make build-release' first."; exit 1; }
+	@test -f target/release/busted || { echo "Error: run 'make build-release' first."; exit 1; }
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 target/release/busted $(DESTDIR)$(BINDIR)/busted
 
-uninstall: ## Remove busted from $(BINDIR) (may need sudo)
+uninstall: ## Remove busted from $(BINDIR)
 	rm -f $(DESTDIR)$(BINDIR)/busted
-
-## Deploy targets --------------------------------------------------------------
 
 docker-build: ## Build production Docker image
 	docker build -f deploy/Dockerfile -t busted:latest .
@@ -103,15 +84,13 @@ helm-lint: ## Lint the Helm chart
 helm-test: ## Run Helm chart tests
 	deploy/helm/test.sh
 
-helm-e2e: build-release ## Run Helm E2E tests (kind + real eBPF + curl to OpenAI)
+helm-e2e: build-release ## Run Helm E2E tests (kind + real eBPF)
 	cargo test -p xtask --test helm_integration -- --ignored --nocapture
 
 ## Maintenance -----------------------------------------------------------------
 
 clean: ## Remove build artifacts
 	cargo clean
-
-## Help ------------------------------------------------------------------------
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \

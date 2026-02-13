@@ -7,64 +7,131 @@
 //! - Reasons explain what triggered the decision
 
 use busted_opa::{Action, PolicyEngine};
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{AgenticAction, BustedEvent, NetworkEventKind, ProcessInfo};
 
 fn default_engine() -> PolicyEngine {
     let policy_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("policies");
     PolicyEngine::new(&policy_dir).expect("default policy should load")
 }
 
-fn bare_event() -> ProcessedEvent {
-    ProcessedEvent {
-        event_type: "TCP_SENDMSG".into(),
+/// Minimal event: Network with no provider — pure background traffic.
+fn bare_event() -> BustedEvent {
+    BustedEvent {
         timestamp: "00:00:00.000".into(),
-        pid: 1,
-        uid: 0,
-        process_name: "nginx".into(),
-        src_ip: "10.0.0.1".into(),
-        src_port: 80,
-        dst_ip: "10.0.0.2".into(),
-        dst_port: 8080,
-        bytes: 64,
-        provider: None,
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "nginx".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:net".into(),
+        identity: None,
         policy: None,
-        container_id: String::new(),
-        cgroup_id: 0,
-        request_rate: None,
-        session_bytes: None,
-        pod_name: None,
-        pod_namespace: None,
-        service_account: None,
-        ml_confidence: None,
-        ml_provider: None,
-        behavior_class: None,
-        cluster_id: None,
-        sni: None,
-        tls_protocol: None,
-        tls_details: None,
-        tls_payload: None,
-        content_class: None,
-        llm_provider: None,
-        llm_endpoint: None,
-        llm_model: None,
-        mcp_method: None,
-        mcp_category: None,
-        agent_sdk: None,
-        agent_fingerprint: None,
-        classifier_confidence: None,
-        pii_detected: None,
-        llm_user_message: None,
-        llm_system_prompt: None,
-        llm_messages_json: None,
-        llm_stream: None,
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: None,
-        agent_model_hash: None,
+        action: AgenticAction::Network {
+            kind: NetworkEventKind::DataSent,
+            src_ip: "10.0.0.1".into(),
+            src_port: 80,
+            dst_ip: "10.0.0.2".into(),
+            dst_port: 8080,
+            bytes: 64,
+            sni: None,
+            provider: None,
+        },
+    }
+}
+
+/// Network event with a provider set.
+fn network_event_with_provider(provider: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "nginx".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:net".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::Network {
+            kind: NetworkEventKind::DataSent,
+            src_ip: "10.0.0.1".into(),
+            src_port: 80,
+            dst_ip: "10.0.0.2".into(),
+            dst_port: 8080,
+            bytes: 64,
+            sni: None,
+            provider: Some(provider.into()),
+        },
+    }
+}
+
+/// Prompt event — used for PII tests since pii_detected is Prompt-only.
+fn prompt_event(provider: &str, pii: Option<bool>) -> BustedEvent {
+    BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "python3".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:abc".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::Prompt {
+            provider: provider.into(),
+            model: None,
+            user_message: None,
+            system_prompt: None,
+            stream: false,
+            sdk: None,
+            bytes: 512,
+            sni: None,
+            endpoint: None,
+            fingerprint: None,
+            pii_detected: pii,
+            confidence: None,
+            sdk_hash: None,
+            model_hash: None,
+        },
+    }
+}
+
+/// McpRequest event.
+fn mcp_event(method: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "mcp-client".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:mcp".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::McpRequest {
+            method: method.into(),
+            category: None,
+            params_preview: None,
+        },
     }
 }
 
@@ -84,31 +151,27 @@ fn default_allows_plain_traffic() {
 fn default_allows_non_llm_http() {
     let mut engine = default_engine();
     let mut event = bare_event();
-    event.dst_port = 443;
-    event.bytes = 4096;
-    let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Allow);
-}
-
-#[test]
-fn default_allows_pii_without_provider() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.pii_detected = Some(true);
-    // No provider, no llm_provider, no content_class — not LLM traffic
+    if let AgenticAction::Network {
+        ref mut dst_port,
+        ref mut bytes,
+        ..
+    } = event.action
+    {
+        *dst_port = 443;
+        *bytes = 4096;
+    }
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Allow);
 }
 
 // =====================================================================
-// Audit: provider detected (IP/SNI)
+// Audit: provider detected (Network action)
 // =====================================================================
 
 #[test]
 fn default_audits_provider_openai() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
+    let event = network_event_with_provider("OpenAI");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(
@@ -121,8 +184,7 @@ fn default_audits_provider_openai() {
 #[test]
 fn default_audits_provider_anthropic() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("Anthropic".into());
+    let event = network_event_with_provider("Anthropic");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("Anthropic")));
@@ -131,8 +193,7 @@ fn default_audits_provider_anthropic() {
 #[test]
 fn default_audits_provider_google() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("Google".into());
+    let event = network_event_with_provider("Google");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
 }
@@ -140,59 +201,45 @@ fn default_audits_provider_google() {
 #[test]
 fn default_audits_provider_deepseek() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("DeepSeek".into());
+    let event = network_event_with_provider("DeepSeek");
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
 }
 
 // =====================================================================
-// Audit: llm_provider detected (content classification)
+// Audit: Prompt action (always _is_llm_traffic via action.type == "Prompt")
 // =====================================================================
 
 #[test]
-fn default_audits_llm_provider_from_classifier() {
+fn default_audits_prompt_action() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.llm_provider = Some("Mistral".into());
+    let event = prompt_event("Mistral", None);
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("Mistral")));
 }
 
 // =====================================================================
-// Audit: content_class == "LlmApi"
+// Audit: McpRequest action
 // =====================================================================
 
 #[test]
-fn default_audits_content_class_llmapi() {
+fn default_audits_mcp_request() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.content_class = Some("LlmApi".into());
+    let event = mcp_event("tools/call");
     let d = engine.evaluate(&event).unwrap();
+    // McpRequest is _is_llm_traffic, so audit
     assert_eq!(d.action, Action::Audit);
 }
 
-#[test]
-fn default_allows_content_class_generic_http() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.content_class = Some("GenericHttp".into());
-    let d = engine.evaluate(&event).unwrap();
-    // GenericHttp is not LLM traffic
-    assert_eq!(d.action, Action::Allow);
-}
-
 // =====================================================================
-// Deny: PII in LLM traffic
+// Deny: PII in LLM traffic (Prompt with pii_detected = true)
 // =====================================================================
 
 #[test]
 fn default_denies_pii_with_provider() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(true);
+    let event = prompt_event("OpenAI", Some(true));
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(
@@ -203,32 +250,18 @@ fn default_denies_pii_with_provider() {
 }
 
 #[test]
-fn default_denies_pii_with_llm_provider() {
+fn default_denies_pii_with_anthropic() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.llm_provider = Some("Anthropic".into());
-    event.pii_detected = Some(true);
+    let event = prompt_event("Anthropic", Some(true));
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Deny);
     assert!(d.reasons.iter().any(|r| r.contains("PII")));
 }
 
 #[test]
-fn default_denies_pii_with_content_class_llmapi() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.content_class = Some("LlmApi".into());
-    event.pii_detected = Some(true);
-    let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Deny);
-}
-
-#[test]
 fn default_pii_false_does_not_deny() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = Some(false);
+    let event = prompt_event("OpenAI", Some(false));
     let d = engine.evaluate(&event).unwrap();
     // pii_detected == false is NOT the same as true
     assert_eq!(d.action, Action::Audit);
@@ -237,9 +270,7 @@ fn default_pii_false_does_not_deny() {
 #[test]
 fn default_pii_null_does_not_deny() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.pii_detected = None;
+    let event = prompt_event("OpenAI", None);
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
 }
@@ -251,26 +282,13 @@ fn default_pii_null_does_not_deny() {
 #[test]
 fn default_mcp_method_in_reasons() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.mcp_method = Some("tools/call".into());
+    let event = mcp_event("tools/call");
     let d = engine.evaluate(&event).unwrap();
     assert!(
         d.reasons.iter().any(|r| r.contains("tools/call")),
         "reasons should mention MCP method: {:?}",
         d.reasons
     );
-}
-
-#[test]
-fn default_mcp_without_provider_is_allowed() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.mcp_method = Some("tools/list".into());
-    // No provider, no llm_provider, no LlmApi content_class
-    let d = engine.evaluate(&event).unwrap();
-    // MCP method alone doesn't make it LLM traffic in the default policy
-    assert_eq!(d.action, Action::Allow);
 }
 
 // =====================================================================
@@ -280,48 +298,12 @@ fn default_mcp_without_provider_is_allowed() {
 #[test]
 fn default_reason_provider_string_interpolated() {
     let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("Groq".into());
+    let event = network_event_with_provider("Groq");
     let d = engine.evaluate(&event).unwrap();
     assert!(d
         .reasons
         .iter()
         .any(|r| r == "Traffic to LLM provider: Groq"));
-}
-
-#[test]
-fn default_reason_llm_provider_string_interpolated() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.llm_provider = Some("Cohere".into());
-    let d = engine.evaluate(&event).unwrap();
-    assert!(d
-        .reasons
-        .iter()
-        .any(|r| r == "Content classified as LLM API call to: Cohere"));
-}
-
-// =====================================================================
-// Both provider and llm_provider set
-// =====================================================================
-
-#[test]
-fn default_both_provider_and_llm_provider_audits_with_both_reasons() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.provider = Some("OpenAI".into());
-    event.llm_provider = Some("OpenAI".into());
-    let d = engine.evaluate(&event).unwrap();
-    assert_eq!(d.action, Action::Audit);
-    // Should have both reason strings
-    assert!(d
-        .reasons
-        .iter()
-        .any(|r| r.contains("Traffic to LLM provider")));
-    assert!(d
-        .reasons
-        .iter()
-        .any(|r| r.contains("Content classified as LLM API call")));
 }
 
 // =====================================================================
@@ -338,92 +320,43 @@ fn default_policy_reload_works() {
 }
 
 // =====================================================================
-// content_class "Mcp" behavior with default.rego
-// =====================================================================
-
-#[test]
-fn default_audits_content_class_mcp() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.content_class = Some("Mcp".into());
-    let d = engine.evaluate(&event).unwrap();
-    // "Mcp" is NOT "LlmApi", so _is_llm_traffic is not triggered by content_class alone.
-    // Without provider or llm_provider, this should be Allow.
-    assert_eq!(d.action, Action::Allow);
-}
-
-// =====================================================================
-// content_class "LlmStream" behavior with default.rego
-// =====================================================================
-
-#[test]
-fn default_audits_content_class_llm_stream() {
-    let mut engine = default_engine();
-    let mut event = bare_event();
-    event.content_class = Some("LlmStream".into());
-    let d = engine.evaluate(&event).unwrap();
-    // "LlmStream" is NOT "LlmApi", so _is_llm_traffic is not triggered by content_class alone.
-    // Without provider or llm_provider, this should be Allow.
-    assert_eq!(d.action, Action::Allow);
-}
-
-// =====================================================================
 // All fields populated — no crash
 // =====================================================================
 
 #[test]
 fn default_all_fields_populated_no_crash() {
     let mut engine = default_engine();
-    let event = ProcessedEvent {
-        event_type: "TLS_DATA_WRITE".into(),
+    let event = BustedEvent {
         timestamp: "23:59:59.999".into(),
-        pid: 99999,
-        uid: 65534,
-        process_name: "full-test-binary".into(),
-        src_ip: "192.168.100.200".into(),
-        src_port: 60000,
-        dst_ip: "203.0.113.50".into(),
-        dst_port: 8443,
-        bytes: 999_999,
-        provider: Some("Anthropic".into()),
+        process: ProcessInfo {
+            pid: 99999,
+            uid: 65534,
+            name: "full-test-binary".into(),
+            container_id: "abc123def456".into(),
+            cgroup_id: 12345678,
+            pod_name: Some("ai-gateway-pod-xyz".into()),
+            pod_namespace: Some("ml-production".into()),
+            service_account: Some("ai-service-account".into()),
+        },
+        session_id: "99999:abc".into(),
+        identity: None,
         policy: Some("custom-policy-v2".into()),
-        container_id: "abc123def456".into(),
-        cgroup_id: 12345678,
-        request_rate: Some(42.5),
-        session_bytes: Some(1_000_000),
-        pod_name: Some("ai-gateway-pod-xyz".into()),
-        pod_namespace: Some("ml-production".into()),
-        service_account: Some("ai-service-account".into()),
-        ml_confidence: Some(0.99),
-        ml_provider: Some("Anthropic".into()),
-        behavior_class: Some("llm_api_call".into()),
-        cluster_id: Some(7),
-        sni: Some("api.anthropic.com".into()),
-        tls_protocol: Some("TLSv1.3".into()),
-        tls_details: Some("ECDHE-RSA-AES256-GCM-SHA384".into()),
-        tls_payload: Some("POST /v1/messages HTTP/1.1".into()),
-        content_class: Some("LlmApi".into()),
-        llm_provider: Some("Anthropic".into()),
-        llm_endpoint: Some("/v1/messages".into()),
-        llm_model: Some("claude-3-opus".into()),
-        mcp_method: Some("tools/call".into()),
-        mcp_category: Some("tool_execution".into()),
-        agent_sdk: Some("anthropic-python/0.25.0".into()),
-        agent_fingerprint: Some(0xabc123),
-        classifier_confidence: Some(0.98),
-        pii_detected: Some(false),
-        llm_user_message: Some("Hello world".into()),
-        llm_system_prompt: Some("You are a helpful assistant".into()),
-        llm_messages_json: Some(r#"[{"role":"user","content":"hi"}]"#.into()),
-        llm_stream: Some(false),
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: None,
-        agent_model_hash: None,
+        action: AgenticAction::Prompt {
+            provider: "Anthropic".into(),
+            model: Some("claude-3-opus".into()),
+            user_message: Some("Hello world".into()),
+            system_prompt: Some("You are a helpful assistant".into()),
+            stream: false,
+            sdk: Some("anthropic-python/0.25.0".into()),
+            bytes: 999_999,
+            sni: Some("api.anthropic.com".into()),
+            endpoint: Some("/v1/messages".into()),
+            fingerprint: Some(0xabc123),
+            pii_detected: Some(false),
+            confidence: Some(0.98),
+            sdk_hash: None,
+            model_hash: None,
+        },
     };
     let d = engine.evaluate(&event).unwrap();
     // With provider set and pii_detected=false, should be Audit
@@ -432,7 +365,7 @@ fn default_all_fields_populated_no_crash() {
 }
 
 // =====================================================================
-// Empty string provider vs None
+// Empty string provider vs None (Network action)
 // =====================================================================
 
 #[test]
@@ -440,12 +373,17 @@ fn default_empty_string_provider() {
     let mut engine = default_engine();
 
     // provider = Some("") — serde serializes as `"provider": ""`
-    // In Rego, "" != null, so _is_llm_traffic fires via input.provider != null
+    // In Rego, "" != null, so _is_llm_traffic fires via input.action.provider != null
     let mut event_empty = bare_event();
-    event_empty.provider = Some(String::new());
+    if let AgenticAction::Network {
+        ref mut provider, ..
+    } = event_empty.action
+    {
+        *provider = Some(String::new());
+    }
     let d_empty = engine.evaluate(&event_empty).unwrap();
 
-    // provider = None — serde serializes as `"provider": null`
+    // provider = None — serde skips the field entirely
     let d_none = engine.evaluate(&bare_event()).unwrap();
 
     // None should be Allow; empty string triggers _is_llm_traffic (provider != null)
@@ -465,13 +403,138 @@ fn default_empty_string_provider() {
 fn default_bytes_u64_max_no_crash() {
     let mut engine = default_engine();
     let mut event = bare_event();
-    event.bytes = u64::MAX;
+    if let AgenticAction::Network { ref mut bytes, .. } = event.action {
+        *bytes = u64::MAX;
+    }
     let d = engine.evaluate(&event).unwrap();
     // No provider, so should still be Allow regardless of byte count
     assert_eq!(d.action, Action::Allow);
 
     // Also test with provider to ensure audit path handles large bytes
-    event.provider = Some("OpenAI".into());
+    if let AgenticAction::Network {
+        ref mut provider, ..
+    } = event.action
+    {
+        *provider = Some("OpenAI".into());
+    }
     let d2 = engine.evaluate(&event).unwrap();
     assert_eq!(d2.action, Action::Audit);
+}
+
+// =====================================================================
+// Network event without PII fields does not trigger PII deny
+// =====================================================================
+
+#[test]
+fn default_allows_network_event_regardless_of_pii_absence() {
+    let mut engine = default_engine();
+    // Network events have no pii_detected field; provider alone should audit, not deny
+    let event = network_event_with_provider("OpenAI");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+}
+
+// =====================================================================
+// McpResponse action
+// =====================================================================
+
+#[test]
+fn default_allows_mcp_response_without_provider() {
+    let mut engine = default_engine();
+    let event = BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "mcp-client".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:mcp".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::McpResponse {
+            method: "tools/list".into(),
+            result_preview: None,
+        },
+    };
+    let d = engine.evaluate(&event).unwrap();
+    // McpResponse has method field, which triggers the MCP reason and _is_llm_traffic
+    // is not triggered (no provider, not Prompt, not McpRequest)
+    // But method field triggers the reason rule since input.action.method != null
+    // However _is_llm_traffic only checks McpRequest type, not McpResponse
+    // So this should be Allow (method reason fires but no _is_llm_traffic match for decision)
+    assert_eq!(d.action, Action::Allow);
+}
+
+// =====================================================================
+// ToolCall action has provider — should audit
+// =====================================================================
+
+#[test]
+fn default_audits_toolcall_with_provider() {
+    let mut engine = default_engine();
+    let event = BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "agent".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:tool".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::ToolCall {
+            tool_name: "search".into(),
+            input_json: None,
+            provider: "OpenAI".into(),
+        },
+    };
+    let d = engine.evaluate(&event).unwrap();
+    // ToolCall has provider field (non-optional String), so _is_llm_traffic fires
+    assert_eq!(d.action, Action::Audit);
+    assert!(d.reasons.iter().any(|r| r.contains("OpenAI")));
+}
+
+// =====================================================================
+// Response action has provider — should audit
+// =====================================================================
+
+#[test]
+fn default_audits_response_with_provider() {
+    let mut engine = default_engine();
+    let event = BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "agent".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:resp".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::Response {
+            provider: "Anthropic".into(),
+            model: Some("claude-3-opus".into()),
+            bytes: 1024,
+            sni: None,
+            confidence: None,
+        },
+    };
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+    assert!(d.reasons.iter().any(|r| r.contains("Anthropic")));
 }

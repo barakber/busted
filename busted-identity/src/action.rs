@@ -1,8 +1,9 @@
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{AgenticAction, BustedEvent, NetworkEventKind};
+use serde::{Deserialize, Serialize};
 
 /// Compact provider tag — no heap allocation.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProviderTag {
     OpenAI,
     Anthropic,
@@ -67,7 +68,7 @@ impl std::fmt::Display for ProviderTag {
 
 /// Compact MCP category tag.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum McpCategoryTag {
     Tools,
     Resources,
@@ -92,8 +93,8 @@ impl McpCategoryTag {
     }
 }
 
-/// Compact, stack-allocated action extracted from a ProcessedEvent.
-#[derive(Debug, Clone)]
+/// Compact, stack-allocated action extracted from a BustedEvent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Action {
     LlmCall {
         provider: ProviderTag,
@@ -115,77 +116,77 @@ pub enum Action {
 }
 
 impl Action {
-    /// Extract an action from a ProcessedEvent, if interesting.
-    pub fn from_processed_event(event: &ProcessedEvent) -> Option<Self> {
-        // PII detected takes priority
-        if event.pii_detected == Some(true) {
-            return Some(Action::PiiDetected);
-        }
+    /// Extract an action from a BustedEvent, if interesting.
+    pub fn from_busted_event(event: &BustedEvent) -> Option<Self> {
+        match &event.action {
+            AgenticAction::PiiDetected { .. } => Some(Action::PiiDetected),
 
-        // MCP call
-        if event.mcp_method.is_some() {
-            let category = event
-                .mcp_category
-                .as_deref()
-                .map(McpCategoryTag::parse)
-                .unwrap_or(McpCategoryTag::Other);
-            let method_hash = event
-                .mcp_method
-                .as_deref()
-                .map(|m| fnv1a_32(m.as_bytes()))
-                .unwrap_or(0);
-            return Some(Action::McpCall {
-                category,
-                method_hash,
-            });
-        }
-
-        // LLM stream receive
-        if event.content_class.as_deref() == Some("LlmStream") {
-            let provider = event
-                .llm_provider
-                .as_deref()
-                .or(event.provider.as_deref())
-                .map(ProviderTag::parse)
-                .unwrap_or(ProviderTag::Other);
-            return Some(Action::LlmStreamRecv { provider });
-        }
-
-        // LLM API call (TLS data write = outbound request)
-        if event.content_class.as_deref() == Some("LlmApi")
-            || event.llm_provider.is_some()
-            || event.llm_model.is_some()
-        {
-            let provider = event
-                .llm_provider
-                .as_deref()
-                .or(event.provider.as_deref())
-                .map(ProviderTag::parse)
-                .unwrap_or(ProviderTag::Other);
-            let model_hash = event.agent_model_hash.unwrap_or(0);
-            let streaming = event.llm_stream.unwrap_or(false);
-            return Some(Action::LlmCall {
-                provider,
-                model_hash,
-                streaming,
-            });
-        }
-
-        // TCP connect to a known provider
-        if event.event_type == "TCP_CONNECT" {
-            if let Some(ref prov) = event.provider {
-                return Some(Action::Connect {
-                    provider: ProviderTag::parse(prov),
-                });
+            AgenticAction::McpRequest {
+                method, category, ..
+            } => {
+                let cat = category
+                    .as_deref()
+                    .map(McpCategoryTag::parse)
+                    .unwrap_or(McpCategoryTag::Other);
+                let method_hash = fnv1a_32(method.as_bytes());
+                Some(Action::McpCall {
+                    category: cat,
+                    method_hash,
+                })
             }
-        }
 
-        // Connection closed
-        if event.event_type == "CONNECTION_CLOSED" && event.provider.is_some() {
-            return Some(Action::Disconnect);
-        }
+            AgenticAction::McpResponse { method, .. } => {
+                let method_hash = fnv1a_32(method.as_bytes());
+                Some(Action::McpCall {
+                    category: McpCategoryTag::Other,
+                    method_hash,
+                })
+            }
 
-        None
+            AgenticAction::Prompt {
+                provider, stream, ..
+            } => {
+                let provider_tag = ProviderTag::parse(provider);
+                let model_hash = event.model_hash().unwrap_or(0);
+                Some(Action::LlmCall {
+                    provider: provider_tag,
+                    model_hash,
+                    streaming: *stream,
+                })
+            }
+
+            AgenticAction::Response { provider, .. } => {
+                let provider_tag = ProviderTag::parse(provider);
+                Some(Action::LlmStreamRecv {
+                    provider: provider_tag,
+                })
+            }
+
+            AgenticAction::ToolCall { provider, .. } => {
+                let provider_tag = ProviderTag::parse(provider);
+                Some(Action::LlmCall {
+                    provider: provider_tag,
+                    model_hash: 0,
+                    streaming: false,
+                })
+            }
+
+            AgenticAction::ToolResult { .. } => None,
+
+            AgenticAction::Network { kind, provider, .. } => match kind {
+                NetworkEventKind::Connect => provider.as_deref().map(|p| Action::Connect {
+                    provider: ProviderTag::parse(p),
+                }),
+                NetworkEventKind::Close => {
+                    if provider.is_some() {
+                        Some(Action::Disconnect)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+        }
     }
 
     /// Short label for display.
@@ -214,75 +215,63 @@ fn fnv1a_32(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busted_types::agentic::ProcessInfo;
 
-    fn base_event() -> ProcessedEvent {
-        ProcessedEvent {
-            event_type: "TCP_CONNECT".into(),
+    fn network_event() -> BustedEvent {
+        BustedEvent {
             timestamp: "12:00:00.000".into(),
-            pid: 1234,
-            uid: 1000,
-            process_name: "python3".into(),
-            src_ip: "10.0.0.1".into(),
-            src_port: 54321,
-            dst_ip: "104.18.1.1".into(),
-            dst_port: 443,
-            bytes: 512,
-            provider: None,
+            process: ProcessInfo {
+                pid: 1234,
+                uid: 1000,
+                name: "python3".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1234:net".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            ml_confidence: None,
-            ml_provider: None,
-            behavior_class: None,
-            cluster_id: None,
-            sni: None,
-            tls_protocol: None,
-            tls_details: None,
-            tls_payload: None,
-            content_class: None,
-            llm_provider: None,
-            llm_endpoint: None,
-            llm_model: None,
-            mcp_method: None,
-            mcp_category: None,
-            agent_sdk: None,
-            agent_fingerprint: None,
-            classifier_confidence: None,
-            pii_detected: None,
-            llm_user_message: None,
-            llm_system_prompt: None,
-            llm_messages_json: None,
-            llm_stream: None,
-            identity_id: None,
-            identity_instance: None,
-            identity_confidence: None,
-            identity_narrative: None,
-            identity_timeline: None,
-            identity_timeline_len: None,
-            agent_sdk_hash: None,
-            agent_model_hash: None,
+            action: AgenticAction::Network {
+                kind: NetworkEventKind::Connect,
+                src_ip: "10.0.0.1".into(),
+                src_port: 54321,
+                dst_ip: "104.18.1.1".into(),
+                dst_port: 443,
+                bytes: 512,
+                sni: None,
+                provider: None,
+            },
         }
     }
 
     #[test]
-    fn bare_event_returns_none() {
-        let event = base_event();
-        assert!(Action::from_processed_event(&event).is_none());
+    fn bare_network_event_returns_none() {
+        let event = network_event();
+        assert!(Action::from_busted_event(&event).is_none());
     }
 
     #[test]
     fn llm_call_extracted() {
-        let mut event = base_event();
-        event.llm_provider = Some("OpenAI".into());
-        event.llm_model = Some("gpt-4".into());
-        event.agent_model_hash = Some(12345);
-        event.llm_stream = Some(true);
-        let action = Action::from_processed_event(&event).unwrap();
+        let mut event = network_event();
+        event.action = AgenticAction::Prompt {
+            provider: "OpenAI".into(),
+            model: Some("gpt-4".into()),
+            user_message: None,
+            system_prompt: None,
+            stream: true,
+            sdk: None,
+            bytes: 512,
+            sni: None,
+            endpoint: None,
+            fingerprint: None,
+            pii_detected: None,
+            confidence: None,
+            sdk_hash: None,
+            model_hash: Some(12345),
+        };
+        let action = Action::from_busted_event(&event).unwrap();
         match action {
             Action::LlmCall {
                 provider,
@@ -299,10 +288,13 @@ mod tests {
 
     #[test]
     fn mcp_call_extracted() {
-        let mut event = base_event();
-        event.mcp_method = Some("tools/call".into());
-        event.mcp_category = Some("Tools".into());
-        let action = Action::from_processed_event(&event).unwrap();
+        let mut event = network_event();
+        event.action = AgenticAction::McpRequest {
+            method: "tools/call".into(),
+            category: Some("Tools".into()),
+            params_preview: None,
+        };
+        let action = Action::from_busted_event(&event).unwrap();
         match action {
             Action::McpCall { category, .. } => {
                 assert_eq!(category, McpCategoryTag::Tools);
@@ -312,20 +304,30 @@ mod tests {
     }
 
     #[test]
-    fn pii_takes_priority() {
-        let mut event = base_event();
-        event.pii_detected = Some(true);
-        event.llm_provider = Some("OpenAI".into());
-        let action = Action::from_processed_event(&event).unwrap();
+    fn pii_detected() {
+        let mut event = network_event();
+        event.action = AgenticAction::PiiDetected {
+            direction: "write".into(),
+            pii_types: Some(vec!["email".into()]),
+        };
+        let action = Action::from_busted_event(&event).unwrap();
         assert!(matches!(action, Action::PiiDetected));
     }
 
     #[test]
     fn connect_with_provider() {
-        let mut event = base_event();
-        event.event_type = "TCP_CONNECT".into();
-        event.provider = Some("Anthropic".into());
-        let action = Action::from_processed_event(&event).unwrap();
+        let mut event = network_event();
+        event.action = AgenticAction::Network {
+            kind: NetworkEventKind::Connect,
+            src_ip: "10.0.0.1".into(),
+            src_port: 54321,
+            dst_ip: "104.18.1.1".into(),
+            dst_port: 443,
+            bytes: 0,
+            sni: None,
+            provider: Some("Anthropic".into()),
+        };
+        let action = Action::from_busted_event(&event).unwrap();
         match action {
             Action::Connect { provider } => {
                 assert_eq!(provider, ProviderTag::Anthropic);
@@ -352,11 +354,16 @@ mod tests {
     }
 
     #[test]
-    fn llm_stream_recv_extracted() {
-        let mut event = base_event();
-        event.content_class = Some("LlmStream".into());
-        event.provider = Some("OpenAI".into());
-        let action = Action::from_processed_event(&event).unwrap();
+    fn response_extracted() {
+        let mut event = network_event();
+        event.action = AgenticAction::Response {
+            provider: "OpenAI".into(),
+            model: None,
+            bytes: 1024,
+            sni: None,
+            confidence: None,
+        };
+        let action = Action::from_busted_event(&event).unwrap();
         assert!(matches!(action, Action::LlmStreamRecv { .. }));
     }
 }

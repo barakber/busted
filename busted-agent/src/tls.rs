@@ -302,6 +302,14 @@ struct ConnState {
     write_buf: Vec<u8>,
     /// Accumulated inbound payload (SSL_read data).
     read_buf: Vec<u8>,
+    /// When the last write chunk arrived.
+    last_write_at: Instant,
+    /// When the last read chunk arrived.
+    last_read_at: Instant,
+    /// Whether the write buffer has been emitted as actions.
+    emitted_write: bool,
+    /// Whether the read buffer has been emitted as actions.
+    emitted_read: bool,
 }
 
 /// Tracks per-connection state in userspace, keyed by (pid, ssl_ptr).
@@ -341,6 +349,10 @@ impl TlsConnTracker {
             first_seen: Instant::now(),
             write_buf: Vec::new(),
             read_buf: Vec::new(),
+            last_write_at: Instant::now(),
+            last_read_at: Instant::now(),
+            emitted_write: false,
+            emitted_read: false,
         });
         state.chunks_seen += 1;
         state.chunks_seen
@@ -350,15 +362,20 @@ impl TlsConnTracker {
     /// `direction`: 0 = write (outbound), 1 = read (inbound).
     pub fn append_payload(&mut self, pid: u32, ssl_ptr: u64, direction: u8, data: &[u8]) {
         if let Some(state) = self.conns.get_mut(&(pid, ssl_ptr)) {
-            let buf = if direction == 0 {
-                &mut state.write_buf
+            if direction == 0 {
+                state.last_write_at = Instant::now();
+                let remaining = FLOW_MAX_BYTES.saturating_sub(state.write_buf.len());
+                if remaining > 0 {
+                    let to_copy = data.len().min(remaining);
+                    state.write_buf.extend_from_slice(&data[..to_copy]);
+                }
             } else {
-                &mut state.read_buf
-            };
-            let remaining = FLOW_MAX_BYTES.saturating_sub(buf.len());
-            if remaining > 0 {
-                let to_copy = data.len().min(remaining);
-                buf.extend_from_slice(&data[..to_copy]);
+                state.last_read_at = Instant::now();
+                let remaining = FLOW_MAX_BYTES.saturating_sub(state.read_buf.len());
+                if remaining > 0 {
+                    let to_copy = data.len().min(remaining);
+                    state.read_buf.extend_from_slice(&data[..to_copy]);
+                }
             }
         }
     }
@@ -397,6 +414,10 @@ impl TlsConnTracker {
             first_seen: Instant::now(),
             write_buf: Vec::new(),
             read_buf: Vec::new(),
+            last_write_at: Instant::now(),
+            last_read_at: Instant::now(),
+            emitted_write: false,
+            emitted_read: false,
         });
         state.decided = true;
         state.interesting = interesting;
@@ -418,6 +439,77 @@ impl TlsConnTracker {
     /// Returns true if there are no tracked connections.
     pub fn is_empty(&self) -> bool {
         self.conns.is_empty()
+    }
+
+    /// Returns true if the write buffer has data that hasn't been emitted yet
+    /// and a direction transition (write→read) has occurred.
+    pub fn should_emit_request(&self, pid: u32, ssl_ptr: u64) -> bool {
+        self.conns
+            .get(&(pid, ssl_ptr))
+            .map(|s| !s.emitted_write && !s.write_buf.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the read buffer has data that hasn't been emitted yet.
+    pub fn should_emit_response(&self, pid: u32, ssl_ptr: u64) -> bool {
+        self.conns
+            .get(&(pid, ssl_ptr))
+            .map(|s| !s.emitted_read && !s.read_buf.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Take the write buffer contents, clearing it and marking as emitted.
+    pub fn take_write_buf(&mut self, pid: u32, ssl_ptr: u64) -> Option<Vec<u8>> {
+        self.conns.get_mut(&(pid, ssl_ptr)).and_then(|s| {
+            if s.write_buf.is_empty() {
+                None
+            } else {
+                s.emitted_write = true;
+                Some(std::mem::take(&mut s.write_buf))
+            }
+        })
+    }
+
+    /// Take the read buffer contents, clearing it and marking as emitted.
+    pub fn take_read_buf(&mut self, pid: u32, ssl_ptr: u64) -> Option<Vec<u8>> {
+        self.conns.get_mut(&(pid, ssl_ptr)).and_then(|s| {
+            if s.read_buf.is_empty() {
+                None
+            } else {
+                s.emitted_read = true;
+                Some(std::mem::take(&mut s.read_buf))
+            }
+        })
+    }
+
+    /// Generate a session ID string for a (pid, ssl_ptr) pair.
+    pub fn session_id(pid: u32, ssl_ptr: u64) -> String {
+        format!("{}:{:x}", pid, ssl_ptr)
+    }
+
+    /// Return all sessions that have unemitted read data older than `idle_threshold`.
+    pub fn pending_response_sessions(
+        &self,
+        idle_threshold: std::time::Duration,
+    ) -> Vec<(u32, u64)> {
+        self.conns
+            .iter()
+            .filter(|(_, s)| {
+                !s.emitted_read
+                    && !s.read_buf.is_empty()
+                    && s.last_read_at.elapsed() > idle_threshold
+            })
+            .map(|(&(pid, ssl_ptr), _)| (pid, ssl_ptr))
+            .collect()
+    }
+
+    /// Reset emission flags so the next accumulation can be emitted again.
+    /// Called after taking buffers to allow fresh data to accumulate.
+    pub fn reset_emission(&mut self, pid: u32, ssl_ptr: u64) {
+        if let Some(state) = self.conns.get_mut(&(pid, ssl_ptr)) {
+            state.emitted_write = false;
+            state.emitted_read = false;
+        }
     }
 
     /// Evict entries older than TTL.

@@ -1,7 +1,8 @@
 use crate::action::ProviderTag;
+use serde::{Deserialize, Serialize};
 
 /// Instance key — identifies a specific running process (changes on restart).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InstanceKey {
     pub pid: u32,
     pub container_id_hash: u32,
@@ -29,7 +30,7 @@ impl std::fmt::Display for InstanceKey {
 }
 
 /// Type key — identifies a *kind* of agent (persists across restarts).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TypeKey {
     pub signature_hash: u64,
     pub sdk_hash: u32,
@@ -64,7 +65,7 @@ pub fn compute_identity_id(key: &TypeKey) -> IdentityId {
 }
 
 /// A resolved identity — accumulated state for one agent type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedIdentity {
     pub identity_id: IdentityId,
     pub type_key: TypeKey,
@@ -77,10 +78,19 @@ pub struct ResolvedIdentity {
     pub active_instances: Vec<InstanceKey>,
     /// Providers this agent has communicated with.
     pub providers: Vec<ProviderTag>,
+    /// FNV-1a digest of top-8 action bigrams (behavioral fingerprint).
+    #[serde(default)]
+    pub behavioral_digest: Option<u64>,
+    /// FNV-1a hash of sorted MCP tool names (capability fingerprint).
+    #[serde(default)]
+    pub capability_hash: Option<u64>,
+    /// SimHash of the system prompt embedding (or FNV-1a fallback).
+    #[serde(default)]
+    pub prompt_fingerprint: Option<u64>,
 }
 
 /// Result of matching an event to an identity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityMatch {
     pub identity_id: IdentityId,
     pub instance_id: InstanceKey,
@@ -88,6 +98,14 @@ pub struct IdentityMatch {
     pub narrative: String,
     pub timeline_summary: String,
     pub timeline_len: usize,
+    /// How the identity was matched (e.g. "ExactInstance", "CompositeMatch(0.78)").
+    pub match_type: String,
+    /// Behavioral digest from n-gram analysis.
+    pub behavioral_digest: Option<u64>,
+    /// MCP capability hash.
+    pub capability_hash: Option<u64>,
+    /// Prompt fingerprint (SimHash or FNV-1a).
+    pub prompt_fingerprint: Option<u64>,
 }
 
 #[cfg(test)]

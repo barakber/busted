@@ -1,0 +1,10 @@
+[package]
+name = "busted-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared color theme for busted TUI and GUI dashboards"
+
+[dependencies]
+busted-types = { path = "../busted-types", features = ["user"] }

@@ -1,0 +1,29 @@
+[package]
+name = "busted-tui"
+description = "Terminal dashboard for the Busted LLM/AI monitoring system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "busted_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "busted-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+tokio = { version = "1.35", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "signal", "time"] }
+busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
+busted-theme = { version = "0.1.0", path = "../busted-theme" }
+serde_json = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

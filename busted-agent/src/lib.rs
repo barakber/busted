@@ -2,7 +2,7 @@
 //!
 //! This crate loads eBPF programs into the kernel (kprobes, uprobes, LSM hooks),
 //! consumes events via a RingBuf, classifies traffic against known LLM providers,
-//! and broadcasts [`ProcessedEvent`]s to CLI output, a Unix socket server (for the
+//! and broadcasts [`BustedEvent`]s to CLI output, a Unix socket server (for the
 //! dashboard UI), and optional SIEM sinks.
 //!
 //! # Feature flags
@@ -30,11 +30,14 @@
 //!     policy_dir: None,
 //!     policy_rule: None,
 //!     metrics_port: 9184,
+//!     identity_store_path: None,
 //! };
 //! run_agent(config).await
 //! # }
 //! ```
 
+#[cfg(feature = "tls")]
+pub mod actions;
 pub mod events;
 #[cfg(feature = "k8s")]
 pub mod k8s;
@@ -59,13 +62,12 @@ use aya_log::EbpfLogger;
 use busted_identity as identity;
 #[cfg(feature = "ml")]
 use busted_ml as ml;
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{AgenticAction, BustedEvent};
 use busted_types::{AgentIdentity, NetworkEvent};
 #[cfg(feature = "tls")]
 use busted_types::{TlsConnKey, TlsDataEvent, TlsHandshakeEvent};
 use log::{debug, info, warn};
 use regex::Regex;
-use serde::Serialize;
 #[cfg(feature = "prometheus")]
 use std::collections::HashSet;
 use std::{
@@ -96,6 +98,7 @@ pub struct AgentConfig {
     pub policy_dir: Option<PathBuf>,
     pub policy_rule: Option<String>,
     pub metrics_port: u16,
+    pub identity_store_path: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -277,156 +280,13 @@ impl PidStats {
 }
 
 // ---------------------------------------------------------------------------
-// Structured output
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-struct EventOutput {
-    event_type: String,
-    timestamp: String,
-    pid: u32,
-    uid: u32,
-    process_name: String,
-    src_ip: String,
-    src_port: u16,
-    dst_ip: String,
-    dst_port: u16,
-    bytes: u64,
-    provider: Option<String>,
-    policy: Option<String>,
-    container_id: String,
-    cgroup_id: u64,
-    request_rate: Option<f64>,
-    session_bytes: Option<u64>,
-    pod_name: Option<String>,
-    pod_namespace: Option<String>,
-    service_account: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ml_confidence: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ml_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    behavior_class: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cluster_id: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sni: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tls_protocol: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tls_details: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tls_payload: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_class: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mcp_method: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mcp_category: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_sdk: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_fingerprint: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    classifier_confidence: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pii_detected: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_user_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_messages_json: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    llm_stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_instance: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_confidence: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_narrative: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_timeline: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity_timeline_len: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_sdk_hash: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent_model_hash: Option<u32>,
-}
-
-impl From<&ProcessedEvent> for EventOutput {
-    fn from(e: &ProcessedEvent) -> Self {
-        EventOutput {
-            event_type: e.event_type.clone(),
-            timestamp: e.timestamp.clone(),
-            pid: e.pid,
-            uid: e.uid,
-            process_name: e.process_name.clone(),
-            src_ip: e.src_ip.clone(),
-            src_port: e.src_port,
-            dst_ip: e.dst_ip.clone(),
-            dst_port: e.dst_port,
-            bytes: e.bytes,
-            provider: e.provider.clone(),
-            policy: e.policy.clone(),
-            container_id: e.container_id.clone(),
-            cgroup_id: e.cgroup_id,
-            request_rate: e.request_rate,
-            session_bytes: e.session_bytes,
-            pod_name: e.pod_name.clone(),
-            pod_namespace: e.pod_namespace.clone(),
-            service_account: e.service_account.clone(),
-            ml_confidence: e.ml_confidence,
-            ml_provider: e.ml_provider.clone(),
-            behavior_class: e.behavior_class.clone(),
-            cluster_id: e.cluster_id,
-            sni: e.sni.clone(),
-            tls_protocol: e.tls_protocol.clone(),
-            tls_details: e.tls_details.clone(),
-            tls_payload: e.tls_payload.clone(),
-            content_class: e.content_class.clone(),
-            llm_provider: e.llm_provider.clone(),
-            llm_endpoint: e.llm_endpoint.clone(),
-            llm_model: e.llm_model.clone(),
-            mcp_method: e.mcp_method.clone(),
-            mcp_category: e.mcp_category.clone(),
-            agent_sdk: e.agent_sdk.clone(),
-            agent_fingerprint: e.agent_fingerprint,
-            classifier_confidence: e.classifier_confidence,
-            pii_detected: e.pii_detected,
-            llm_user_message: e.llm_user_message.clone(),
-            llm_system_prompt: e.llm_system_prompt.clone(),
-            llm_messages_json: e.llm_messages_json.clone(),
-            llm_stream: e.llm_stream,
-            identity_id: e.identity_id,
-            identity_instance: e.identity_instance.clone(),
-            identity_confidence: e.identity_confidence,
-            identity_narrative: e.identity_narrative.clone(),
-            identity_timeline: e.identity_timeline.clone(),
-            identity_timeline_len: e.identity_timeline_len,
-            agent_sdk_hash: e.agent_sdk_hash,
-            agent_model_hash: e.agent_model_hash,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Event handling
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_event(
     event: NetworkEvent,
-    tx: &broadcast::Sender<ProcessedEvent>,
+    tx: &broadcast::Sender<BustedEvent>,
     identity_map: &Arc<Mutex<AyaHashMap<MapData, u32, AgentIdentity>>>,
     policy_map: &Arc<Mutex<AyaHashMap<MapData, u32, u8>>>,
     provider_map: &Arc<RwLock<HashMap<IpAddr, &'static str>>>,
@@ -435,7 +295,7 @@ async fn handle_event(
     pid_stats: &mut HashMap<u32, PidStats>,
     #[cfg(feature = "k8s")] k8s_cache: &Arc<RwLock<HashMap<String, k8s::PodMetadata>>>,
     #[cfg(feature = "identity")] identity_tracker: &mut identity::IdentityTracker,
-    #[cfg(feature = "ml")] ml_classifier: &mut ml::MlClassifier,
+    #[cfg(feature = "ml")] _ml_classifier: &mut ml::MlClassifier,
     #[cfg(feature = "tls")] sni_cache: &tls::SniCache,
     #[cfg(feature = "opa")] opa_engine: &mut Option<busted_opa::PolicyEngine>,
     #[cfg(feature = "prometheus")] llm_pids: &mut HashSet<u32>,
@@ -519,7 +379,7 @@ async fn handle_event(
     stats.event_count += 1;
     stats.bytes_total += event.bytes;
     let request_rate = stats.request_rate();
-    let session_bytes = stats.bytes_total;
+    let _session_bytes = stats.bytes_total;
 
     // Flag high-rate port-443 traffic as possible LLM even without IP match
     if provider.is_none() && event.dport == 443 && request_rate > 10.0 {
@@ -534,53 +394,27 @@ async fn handle_event(
     let mut processed = events::from_network_event(&event, provider, policy_str);
     // Override container_id with the one resolved from /proc (more reliable)
     if !container_id.is_empty() {
-        processed.container_id = container_id;
+        processed.process.container_id = container_id;
     }
-    processed.request_rate = Some(request_rate);
-    processed.session_bytes = Some(session_bytes);
 
     // Attach SNI hostname if available
     #[cfg(feature = "tls")]
-    {
-        processed.sni = sni_hostname.map(|s| s.to_string());
+    if let AgenticAction::Network { ref mut sni, .. } = processed.action {
+        *sni = sni_hostname.map(|s| s.to_string());
     }
 
     // Enrich with Kubernetes pod metadata if available
     #[cfg(feature = "k8s")]
     {
         let k8s_map = k8s_cache.read().await;
-        if let Some(meta) = k8s::resolve_pod_metadata(&processed.container_id, &k8s_map) {
-            processed.pod_name = Some(meta.pod_name);
-            processed.pod_namespace = Some(meta.namespace);
-            processed.service_account = Some(meta.service_account);
+        if let Some(meta) = k8s::resolve_pod_metadata(&processed.process.container_id, &k8s_map) {
+            processed.process.pod_name = Some(meta.pod_name);
+            processed.process.pod_namespace = Some(meta.namespace);
+            processed.process.service_account = Some(meta.service_account);
         }
     }
 
-    // ML behavioral classification
-    #[cfg(feature = "ml")]
-    {
-        let behavior = ml_classifier.process_event(&event, provider);
-        if let Some(ref b) = behavior {
-            // If ML detects LLM traffic with high confidence but IP match missed it,
-            // promote the ML prediction to the provider field.
-            if b.is_novel && b.confidence > 0.85 && processed.provider.is_none() {
-                if let ml::BehaviorClass::LlmApi(ref p) = b.class {
-                    processed.provider = Some(format!("{} (ML)", p));
-                }
-            }
-            processed.ml_confidence = Some(b.confidence);
-            processed.behavior_class = Some(b.class.to_string());
-            processed.cluster_id = Some(b.cluster_id);
-            if let ml::BehaviorClass::LlmApi(ref p) = b.class {
-                processed.ml_provider = Some(p.clone());
-            }
-
-            #[cfg(feature = "prometheus")]
-            metrics::record_ml_classification(&b.class.to_string());
-        }
-    }
-
-    // Identity tracking (after ML, before OPA so policies can see identity fields)
+    // Identity tracking
     #[cfg(feature = "identity")]
     enrich_with_identity(&mut processed, identity_tracker);
 
@@ -620,21 +454,19 @@ async fn handle_event(
     // Record event metrics (all events, not just interesting ones)
     #[cfg(feature = "prometheus")]
     metrics::record_event(
-        &processed.event_type,
-        processed.provider.as_deref(),
-        processed.bytes,
+        processed.event_type(),
+        processed.provider(),
+        processed.bytes(),
     );
 
     // Only broadcast interesting events (LLM/AI-related)
-    // Non-interesting traffic is only visible at debug log level
-    if processed.provider.is_some() {
-        // Track unique PIDs and providers for metrics
+    if processed.provider().is_some() {
         #[cfg(feature = "prometheus")]
         {
-            llm_pids.insert(processed.pid);
+            llm_pids.insert(processed.process.pid);
             metrics::set_active_pids(llm_pids.len());
-            if let Some(ref p) = processed.provider {
-                if unique_providers.insert(p.clone()) {
+            if let Some(p) = processed.provider() {
+                if unique_providers.insert(p.to_string()) {
                     metrics::set_providers_detected(unique_providers.len());
                 }
             }
@@ -642,29 +474,34 @@ async fn handle_event(
         let _ = tx.send(processed);
     } else {
         debug!(
-            "[{}] PID: {} ({}) | {}:{} -> {}:{} | {} bytes",
-            processed.event_type,
-            processed.pid,
-            processed.process_name,
-            processed.src_ip,
-            processed.src_port,
-            processed.dst_ip,
-            processed.dst_port,
-            processed.bytes,
+            "[{}] PID: {} ({}) | {} bytes",
+            processed.event_type(),
+            processed.process.pid,
+            processed.process.name,
+            processed.bytes(),
         );
     }
 }
 
-/// Enrich a ProcessedEvent with identity tracking fields.
+/// Enrich a BustedEvent with identity tracking fields.
 #[cfg(feature = "identity")]
-fn enrich_with_identity(processed: &mut ProcessedEvent, tracker: &mut identity::IdentityTracker) {
+fn enrich_with_identity(processed: &mut BustedEvent, tracker: &mut identity::IdentityTracker) {
+    use busted_types::agentic::IdentityInfo;
     if let Some(id_match) = tracker.observe(processed) {
-        processed.identity_id = Some(id_match.identity_id);
-        processed.identity_instance = Some(id_match.instance_id.to_string());
-        processed.identity_confidence = Some(id_match.confidence);
-        processed.identity_narrative = Some(id_match.narrative);
-        processed.identity_timeline = Some(id_match.timeline_summary);
-        processed.identity_timeline_len = Some(id_match.timeline_len);
+        processed.identity = Some(IdentityInfo {
+            id: id_match.identity_id,
+            instance: id_match.instance_id.to_string(),
+            confidence: id_match.confidence,
+            match_type: Some(id_match.match_type),
+            narrative: Some(id_match.narrative),
+            timeline: Some(id_match.timeline_summary),
+            timeline_len: Some(id_match.timeline_len),
+            prompt_fingerprint: id_match.prompt_fingerprint,
+            behavioral_digest: id_match.behavioral_digest,
+            capability_hash: id_match.capability_hash,
+            graph_node_count: Some(tracker.graph_node_count()),
+            graph_edge_count: Some(tracker.graph_edge_count()),
+        });
     }
 }
 
@@ -673,7 +510,7 @@ fn enrich_with_identity(processed: &mut ProcessedEvent, tracker: &mut identity::
 // ---------------------------------------------------------------------------
 
 async fn cli_output_consumer(
-    mut rx: broadcast::Receiver<ProcessedEvent>,
+    mut rx: broadcast::Receiver<BustedEvent>,
     format: String,
     verbose: bool,
 ) {
@@ -681,183 +518,167 @@ async fn cli_output_consumer(
         match rx.recv().await {
             Ok(event) => match format.as_str() {
                 "json" => {
-                    let output = EventOutput::from(&event);
-                    if let Ok(json) = serde_json::to_string(&output) {
+                    if let Ok(json) = serde_json::to_string(&event) {
                         println!("{}", json);
                     }
                 }
                 "verbose" => {
-                    // Legacy raw format
-                    if event.event_type.starts_with("TLS_DATA_") {
-                        if let Some(ref payload) = event.tls_payload {
-                            info!(
-                                "[{}] {} | PID: {} ({}) | {} bytes | {}{}\n---\n{}\n---",
-                                event.event_type,
-                                event.timestamp,
-                                event.pid,
-                                event.process_name,
-                                event.bytes,
-                                event.tls_protocol.as_deref().unwrap_or(""),
-                                event
-                                    .tls_details
-                                    .as_ref()
-                                    .map(|d| format!(" ({})", d))
-                                    .unwrap_or_default(),
-                                payload,
-                            );
-                        }
-                    } else {
-                        info!(
-                            "[{}] {} | PID: {} ({}) | UID: {} | {}:{} -> {}:{} | {} bytes | Provider: {}{}{}",
-                            event.event_type,
-                            event.timestamp,
-                            event.pid,
-                            event.process_name,
-                            event.uid,
-                            event.src_ip,
-                            event.src_port,
-                            event.dst_ip,
-                            event.dst_port,
-                            event.bytes,
-                            event.provider.as_deref().unwrap_or("unknown"),
-                            event.policy.as_ref().map(|p| format!(" | Policy: {}", p)).unwrap_or_default(),
-                            if !event.container_id.is_empty() {
-                                format!(" | Container: {}", event.container_id)
-                            } else {
-                                String::new()
-                            },
-                        );
-                    }
+                    info!(
+                        "[{}] {} | PID: {} ({}) | {} bytes | {:?}",
+                        event.event_type(),
+                        event.timestamp,
+                        event.process.pid,
+                        event.process.name,
+                        event.bytes(),
+                        event.action,
+                    );
                 }
                 _ => {
-                    // Default "text" format — high-level action view
-                    if !event.event_type.starts_with("TLS_DATA_") {
-                        // Non-TLS events: show compact one-liner only when verbose
-                        if verbose {
-                            let ts = if event.timestamp.len() > 8 {
-                                &event.timestamp[..8]
-                            } else {
-                                &event.timestamp
-                            };
-                            println!(
-                                "{} {} ({}) [{}] {}:{} -> {}:{} {} bytes",
-                                ts,
-                                event.process_name,
-                                event.pid,
-                                event.event_type,
-                                event.src_ip,
-                                event.src_port,
-                                event.dst_ip,
-                                event.dst_port,
-                                event.bytes,
-                            );
-                        }
-                        continue;
-                    }
-
-                    // TLS events: action-focused output
+                    // Default "text" format — action-focused output
                     let ts = if event.timestamp.len() > 8 {
                         &event.timestamp[..8]
                     } else {
                         &event.timestamp
                     };
+                    let pid = event.process.pid;
+                    let name = &event.process.name;
 
-                    let direction = if event.event_type == "TLS_DATA_WRITE" {
-                        ">>>"
-                    } else {
-                        "<<<"
-                    };
-
-                    // Build action string: "Provider Model Endpoint" or "MCP method (category)"
-                    let action = if let Some(ref mcp) = event.mcp_method {
-                        let cat = event
-                            .mcp_category
-                            .as_deref()
-                            .map(|c| format!(" ({})", c))
-                            .unwrap_or_default();
-                        format!("MCP {}{}", mcp, cat)
-                    } else {
-                        let provider = event
-                            .llm_provider
-                            .as_deref()
-                            .or(event.provider.as_deref())
-                            .unwrap_or("unknown");
-                        let model = event.llm_model.as_deref().unwrap_or("");
-                        let endpoint = event
-                            .llm_endpoint
-                            .as_deref()
-                            .and_then(|ep| ep.rsplit('/').next())
-                            .unwrap_or("");
-                        let mut parts = vec![provider.to_string()];
-                        if !model.is_empty() {
-                            parts.push(model.to_string());
-                        }
-                        if !endpoint.is_empty() {
-                            parts.push(endpoint.to_string());
-                        }
-                        parts.join(" ")
-                    };
-
-                    // Build indicator brackets
-                    let mut indicators = Vec::new();
-                    if let Some(ref sdk) = event.agent_sdk {
-                        indicators.push(format!("sdk:{}", sdk));
-                    }
-                    if event.llm_stream == Some(true) {
-                        indicators.push("stream".to_string());
-                    }
-                    if event.pii_detected == Some(true) {
-                        indicators.push("PII!".to_string());
-                    }
-                    if let Some(ref policy) = event.policy {
-                        if policy != "allow" {
-                            indicators.push(format!("policy:{}", policy));
-                        }
-                    }
-                    let indicator_str = if indicators.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", indicators.join(" | "))
-                    };
-
-                    // For responses, show size
-                    let size_str = if event.event_type == "TLS_DATA_READ" {
-                        format!(" ({})", format_human_bytes(event.bytes))
-                    } else {
-                        String::new()
-                    };
-
-                    println!(
-                        "{} {} ({}) {} {}{}{}",
-                        ts,
-                        event.process_name,
-                        event.pid,
-                        direction,
-                        action,
-                        size_str,
-                        indicator_str,
-                    );
-
-                    // Content lines (indented) — only for requests
-                    if event.event_type == "TLS_DATA_WRITE" {
-                        if let Some(ref msg) = event.llm_user_message {
-                            let display = if verbose {
-                                msg.clone()
+                    match &event.action {
+                        AgenticAction::Prompt {
+                            provider,
+                            model,
+                            user_message,
+                            system_prompt,
+                            stream,
+                            sdk,
+                            pii_detected,
+                            ..
+                        } => {
+                            let mut indicators = Vec::new();
+                            if let Some(ref s) = sdk {
+                                indicators.push(format!("sdk:{}", s));
+                            }
+                            if *stream {
+                                indicators.push("stream".to_string());
+                            }
+                            if pii_detected == &Some(true) {
+                                indicators.push("PII!".to_string());
+                            }
+                            if let Some(ref p) = event.policy {
+                                if p != "allow" {
+                                    indicators.push(format!("policy:{}", p));
+                                }
+                            }
+                            let ind = if indicators.is_empty() {
+                                String::new()
                             } else {
-                                truncate_at_char(msg, 120)
+                                format!(" [{}]", indicators.join(" | "))
                             };
-                            println!("  user: {}", display);
+                            let model_str = model.as_deref().unwrap_or("");
+                            println!(
+                                "{} {} ({}) >>> {} {}{}",
+                                ts, name, pid, provider, model_str, ind,
+                            );
+                            if let Some(ref msg) = user_message {
+                                let display = if verbose {
+                                    msg.clone()
+                                } else {
+                                    truncate_at_char(msg, 120)
+                                };
+                                println!("  user: {}", display);
+                            }
+                            if let Some(ref prompt) = system_prompt {
+                                let display = if verbose {
+                                    prompt.clone()
+                                } else {
+                                    truncate_at_char(prompt, 120)
+                                };
+                                println!("  system: {}", display);
+                            }
                         }
-                        if let Some(ref prompt) = event.llm_system_prompt {
-                            let display = if verbose {
-                                prompt.clone()
-                            } else {
-                                truncate_at_char(prompt, 120)
-                            };
-                            println!("  system: {}", display);
+                        AgenticAction::Response {
+                            provider,
+                            model,
+                            bytes,
+                            ..
+                        } => {
+                            let model_str = model.as_deref().unwrap_or("");
+                            println!(
+                                "{} {} ({}) <<< {} {} ({})",
+                                ts,
+                                name,
+                                pid,
+                                provider,
+                                model_str,
+                                format_human_bytes(*bytes),
+                            );
                         }
-                        if verbose {
-                            if let Some(ref narrative) = event.identity_narrative {
+                        AgenticAction::ToolCall {
+                            tool_name,
+                            provider,
+                            ..
+                        } => {
+                            println!(
+                                "{} {} ({}) <~> tool: {} ({})",
+                                ts, name, pid, tool_name, provider,
+                            );
+                        }
+                        AgenticAction::ToolResult {
+                            tool_name,
+                            output_preview,
+                        } => {
+                            let preview = output_preview
+                                .as_deref()
+                                .map(|s| truncate_at_char(s, 80))
+                                .unwrap_or_default();
+                            println!(
+                                "{} {} ({}) ~>  result: {} {}",
+                                ts, name, pid, tool_name, preview,
+                            );
+                        }
+                        AgenticAction::McpRequest {
+                            method, category, ..
+                        } => {
+                            let cat = category
+                                .as_deref()
+                                .map(|c| format!(" ({})", c))
+                                .unwrap_or_default();
+                            println!("{} {} ({}) >>> MCP {}{}", ts, name, pid, method, cat,);
+                        }
+                        AgenticAction::McpResponse { method, .. } => {
+                            println!("{} {} ({}) <<< MCP {}", ts, name, pid, method,);
+                        }
+                        AgenticAction::PiiDetected {
+                            direction,
+                            pii_types,
+                        } => {
+                            let types =
+                                pii_types.as_ref().map(|t| t.join(", ")).unwrap_or_default();
+                            println!(
+                                "{} {} ({}) !! PII detected ({}) [{}]",
+                                ts, name, pid, direction, types,
+                            );
+                        }
+                        AgenticAction::Network {
+                            kind,
+                            dst_ip,
+                            dst_port,
+                            bytes,
+                            ..
+                        } => {
+                            if verbose {
+                                println!(
+                                    "{} {} ({}) [{:?}] {}:{} {} bytes",
+                                    ts, name, pid, kind, dst_ip, dst_port, bytes,
+                                );
+                            }
+                        }
+                    }
+
+                    // Identity narrative (verbose only)
+                    if verbose {
+                        if let Some(ref ident) = event.identity {
+                            if let Some(ref narrative) = ident.narrative {
                                 println!("  identity: {}", narrative);
                             }
                         }
@@ -1144,7 +965,7 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     };
 
     // Event broadcast channel
-    let (tx, _) = broadcast::channel::<ProcessedEvent>(4096);
+    let (tx, _) = broadcast::channel::<BustedEvent>(4096);
 
     // Start CLI output consumer
     let cli_rx = tx.subscribe();
@@ -1184,6 +1005,12 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     #[cfg(feature = "k8s")]
     let k8s_cache_clone = k8s_cache.clone();
 
+    #[cfg(feature = "identity")]
+    let identity_store_path = config.identity_store_path;
+    // Suppress unused warning when identity feature is off
+    #[cfg(not(feature = "identity"))]
+    let _ = config.identity_store_path;
+
     task::spawn(async move {
         let mut container_cache: HashMap<u32, String> = HashMap::new();
         let mut pid_stats: HashMap<u32, PidStats> = HashMap::new();
@@ -1191,7 +1018,11 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
         #[cfg(feature = "opa")]
         let mut opa_engine = opa_engine;
         #[cfg(feature = "identity")]
-        let mut identity_tracker = identity::IdentityTracker::new();
+        let mut identity_tracker = {
+            let mut tracker_config = identity::TrackerConfig::default();
+            tracker_config.store_path = identity_store_path;
+            identity::IdentityTracker::with_config(tracker_config)
+        };
         #[cfg(feature = "identity")]
         let mut identity_last_gc = Instant::now();
         #[cfg(feature = "identity")]
@@ -1276,18 +1107,12 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                     }
 
                     if tls_conn_tracker.is_decided(tls_data.pid, tls_data.ssl_ptr) {
-                        // Already decided interesting — accumulate and forward
+                        // Already decided interesting — accumulate payload
                         tls_conn_tracker.append_payload(
                             tls_data.pid,
                             tls_data.ssl_ptr,
                             tls_data.direction,
                             tls_data.payload_bytes(),
-                        );
-
-                        let classification = tls::classify_payload(
-                            tls_data.payload_bytes(),
-                            tls_data.direction,
-                            sni_hint,
                         );
                         debug!(
                             "TLS data {}: PID {} ({}) {} bytes",
@@ -1297,101 +1122,76 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                             tls_data.payload_len,
                         );
 
-                        let mut processed = events::from_tls_data_event(&tls_data, &classification);
-                        // Replace per-chunk payload with accumulated flow for the
-                        // matching direction (write flow for outbound, read for inbound)
-                        let flow = if tls_data.direction == 0 {
-                            tls_conn_tracker.flow_payload(tls_data.pid, tls_data.ssl_ptr)
-                        } else {
-                            tls_conn_tracker.read_flow_payload(tls_data.pid, tls_data.ssl_ptr)
-                        };
-                        if let Some(f) = flow {
-                            processed.tls_payload = Some(f);
-                        }
-                        // Enrich with SNI: set provider from SNI when classifier
-                        // can't determine it (e.g. HTTP/2 binary framing)
-                        if let Some(sni) = sni_hint {
-                            processed.sni = Some(sni.to_string());
-                            if processed.llm_provider.is_none() {
-                                if let Some(provider) = tls::classify_by_sni(sni) {
-                                    processed.llm_provider = Some(provider.to_string());
-                                    processed.provider = Some(provider.to_string());
-                                }
-                            }
-                        }
-
-                        // Parse the LLM request body (Anthropic/OpenAI protocol)
-                        // to extract structured fields for policy evaluation
-                        if let Some(ref payload) = processed.tls_payload {
-                            if let Some(parsed) =
-                                busted_classifier::protocols::parse_llm_request(payload, sni_hint)
+                        // Session completion: emit actions on direction transitions
+                        // When read arrives and write not yet emitted → emit request actions
+                        if tls_data.direction == 1
+                            && tls_conn_tracker.should_emit_request(tls_data.pid, tls_data.ssl_ptr)
+                        {
+                            if let Some(write_buf) =
+                                tls_conn_tracker.take_write_buf(tls_data.pid, tls_data.ssl_ptr)
                             {
-                                processed.llm_user_message = parsed.user_message;
-                                processed.llm_system_prompt = parsed.system_prompt;
-                                processed.llm_stream = Some(parsed.stream);
-                                if let Ok(json) = serde_json::to_string(&parsed.messages) {
-                                    processed.llm_messages_json = Some(json);
-                                }
-                                // Fill in model/provider from parsed body if classifier missed them
-                                if processed.llm_model.is_none() {
-                                    processed.llm_model = parsed.model;
-                                }
-                                if processed.llm_provider.is_none() {
-                                    processed.llm_provider = Some(parsed.provider.clone());
-                                    processed.provider = Some(parsed.provider);
-                                }
-                            }
-                        }
-
-                        #[cfg(feature = "identity")]
-                        enrich_with_identity(&mut processed, &mut identity_tracker);
-
-                        #[cfg(feature = "opa")]
-                        if let Some(ref mut engine) = opa_engine {
-                            let opa_start = Instant::now();
-                            let opa_result = engine.evaluate(&processed);
-                            let opa_elapsed = opa_start.elapsed();
-                            match opa_result {
-                                Ok(decision) => {
-                                    #[cfg(feature = "prometheus")]
-                                    metrics::record_opa_eval_duration(
-                                        opa_elapsed,
-                                        decision.action.as_str(),
+                                let session_id =
+                                    tls::TlsConnTracker::session_id(tls_data.pid, tls_data.ssl_ptr);
+                                let write_actions =
+                                    actions::parse_write_actions(&write_buf, sni_hint);
+                                for action in write_actions {
+                                    #[allow(unused_mut)]
+                                    let mut evt = events::from_tls_session(
+                                        tls_data.pid,
+                                        tls_data.process_name(),
+                                        &session_id,
+                                        sni_hint,
+                                        action,
                                     );
-                                    processed.policy = Some(decision.action.as_str().to_string());
-                                    if enforce {
-                                        match decision.action {
-                                            busted_opa::Action::Deny => {
-                                                warn!(
-                                                    "OPA DENY for PID {} ({}), KILLING process",
-                                                    tls_data.pid,
-                                                    tls_data.process_name(),
-                                                );
-                                                // Write KILL verdict so eBPF sends SIGKILL
-                                                // on any future SSL call from this connection
+                                    #[cfg(feature = "identity")]
+                                    enrich_with_identity(&mut evt, &mut identity_tracker);
+                                    #[cfg(feature = "opa")]
+                                    if let Some(ref mut engine) = opa_engine {
+                                        if let Ok(decision) = engine.evaluate(&evt) {
+                                            evt.policy = Some(decision.action.as_str().to_string());
+                                            if enforce
+                                                && matches!(
+                                                    decision.action,
+                                                    busted_opa::Action::Deny
+                                                )
+                                            {
                                                 let _ = tls_verdict_map.insert(key, 3u8, 0);
-                                                // Also kill immediately from userspace
                                                 unsafe {
                                                     libc::kill(tls_data.pid as i32, libc::SIGKILL);
                                                 }
                                             }
-                                            busted_opa::Action::Audit => {
-                                                if let Ok(mut pmap) = policy_map.try_lock() {
-                                                    let _ = pmap.insert(tls_data.pid, 2, 0);
-                                                }
-                                            }
-                                            busted_opa::Action::Allow => {}
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    #[cfg(feature = "prometheus")]
-                                    metrics::record_opa_eval_duration(opa_elapsed, "error");
-                                    warn!("OPA evaluation failed: {e}");
+                                    let _ = tx.send(evt);
                                 }
                             }
                         }
-                        let _ = tx.send(processed);
+                        // When write arrives and read not yet emitted → emit response actions
+                        if tls_data.direction == 0
+                            && tls_conn_tracker.should_emit_response(tls_data.pid, tls_data.ssl_ptr)
+                        {
+                            if let Some(read_buf) =
+                                tls_conn_tracker.take_read_buf(tls_data.pid, tls_data.ssl_ptr)
+                            {
+                                let session_id =
+                                    tls::TlsConnTracker::session_id(tls_data.pid, tls_data.ssl_ptr);
+                                let read_actions = actions::parse_read_actions(&read_buf, sni_hint);
+                                for action in read_actions {
+                                    #[allow(unused_mut)]
+                                    let mut evt = events::from_tls_session(
+                                        tls_data.pid,
+                                        tls_data.process_name(),
+                                        &session_id,
+                                        sni_hint,
+                                        action,
+                                    );
+                                    #[cfg(feature = "identity")]
+                                    enrich_with_identity(&mut evt, &mut identity_tracker);
+                                    let _ = tx.send(evt);
+                                }
+                                tls_conn_tracker.reset_emission(tls_data.pid, tls_data.ssl_ptr);
+                            }
+                        }
                     } else {
                         // Still undecided — classify this chunk
                         let classification = tls::classify_payload(
@@ -1425,106 +1225,9 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                 classification.provider().unwrap_or(""),
                                 chunk_num,
                             );
-
-                            let mut processed =
-                                events::from_tls_data_event(&tls_data, &classification);
-                            // Replace per-chunk payload with accumulated flow
-                            let flow = if tls_data.direction == 0 {
-                                tls_conn_tracker.flow_payload(tls_data.pid, tls_data.ssl_ptr)
-                            } else {
-                                tls_conn_tracker.read_flow_payload(tls_data.pid, tls_data.ssl_ptr)
-                            };
-                            if let Some(f) = flow {
-                                processed.tls_payload = Some(f);
-                            }
-                            // Enrich with SNI
-                            if let Some(sni) = sni_hint {
-                                processed.sni = Some(sni.to_string());
-                                if processed.llm_provider.is_none() {
-                                    if let Some(provider) = tls::classify_by_sni(sni) {
-                                        processed.llm_provider = Some(provider.to_string());
-                                        processed.provider = Some(provider.to_string());
-                                    }
-                                }
-                            }
-
-                            // Parse the LLM request body
-                            if let Some(ref payload) = processed.tls_payload {
-                                if let Some(parsed) =
-                                    busted_classifier::protocols::parse_llm_request(
-                                        payload, sni_hint,
-                                    )
-                                {
-                                    processed.llm_user_message = parsed.user_message;
-                                    processed.llm_system_prompt = parsed.system_prompt;
-                                    processed.llm_stream = Some(parsed.stream);
-                                    if let Ok(json) = serde_json::to_string(&parsed.messages) {
-                                        processed.llm_messages_json = Some(json);
-                                    }
-                                    if processed.llm_model.is_none() {
-                                        processed.llm_model = parsed.model;
-                                    }
-                                    if processed.llm_provider.is_none() {
-                                        processed.llm_provider = Some(parsed.provider.clone());
-                                        processed.provider = Some(parsed.provider);
-                                    }
-                                }
-                            }
-
-                            #[cfg(feature = "identity")]
-                            enrich_with_identity(&mut processed, &mut identity_tracker);
-
-                            #[cfg(feature = "opa")]
-                            if let Some(ref mut engine) = opa_engine {
-                                let opa_start = Instant::now();
-                                let opa_result = engine.evaluate(&processed);
-                                let opa_elapsed = opa_start.elapsed();
-                                match opa_result {
-                                    Ok(decision) => {
-                                        #[cfg(feature = "prometheus")]
-                                        metrics::record_opa_eval_duration(
-                                            opa_elapsed,
-                                            decision.action.as_str(),
-                                        );
-                                        processed.policy =
-                                            Some(decision.action.as_str().to_string());
-                                        if enforce {
-                                            match decision.action {
-                                                busted_opa::Action::Deny => {
-                                                    warn!(
-                                                        "OPA DENY for PID {} ({}), KILLING process",
-                                                        tls_data.pid,
-                                                        tls_data.process_name(),
-                                                    );
-                                                    let _ = tls_verdict_map.insert(key, 3u8, 0);
-                                                    unsafe {
-                                                        libc::kill(
-                                                            tls_data.pid as i32,
-                                                            libc::SIGKILL,
-                                                        );
-                                                    }
-                                                }
-                                                busted_opa::Action::Audit => {
-                                                    if let Ok(mut pmap) = policy_map.try_lock() {
-                                                        let _ = pmap.insert(tls_data.pid, 2, 0);
-                                                    }
-                                                }
-                                                busted_opa::Action::Allow => {}
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        #[cfg(feature = "prometheus")]
-                                        metrics::record_opa_eval_duration(opa_elapsed, "error");
-                                        warn!("OPA evaluation failed: {e}");
-                                    }
-                                }
-                            }
-                            let _ = tx.send(processed);
                         } else if tls_conn_tracker
                             .should_mark_boring(tls_data.pid, tls_data.ssl_ptr)
                         {
-                            // Hit the limit — mark as boring
                             tls_conn_tracker.set_verdict(tls_data.pid, tls_data.ssl_ptr, false);
                             let _ = tls_verdict_map.insert(key, 2u8, 0); // BORING
 

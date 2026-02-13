@@ -1,6 +1,7 @@
-use busted_types::processed::ProcessedEvent;
-use std::sync::mpsc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use busted_types::agentic::{
+    AgenticAction, BustedEvent, IdentityInfo, NetworkEventKind, ProcessInfo,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Scenario {
     process_name: &'static str,
@@ -19,7 +20,7 @@ struct Scenario {
     pii: bool,
     policy: &'static str,
     identity_narrative: Option<&'static str>,
-    identity_timeline: Option<&'static str>,
+    tool_name: Option<&'static str>,
 }
 
 const SCENARIOS: &[Scenario] = &[
@@ -34,13 +35,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Analyze the quarterly revenue data and identify the top 3 growth drivers compared to last quarter. Focus on the SaaS segment."),
-        system_prompt: Some("You are a financial analyst specializing in SaaS metrics. Always cite specific numbers."),
+        user_message: Some("Analyze the quarterly revenue data and identify the top 3 growth drivers compared to last quarter."),
+        system_prompt: Some("You are a financial analyst specializing in SaaS metrics."),
         stream: true,
         pii: false,
         policy: "audit",
         identity_narrative: Some("Financial analysis assistant processing quarterly reports"),
-        identity_timeline: Some("09:00 init -> 09:01 load_data -> 14:23 analyze_revenue"),
+        tool_name: None,
     },
     Scenario {
         process_name: "node",
@@ -53,13 +54,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Review the pull request diff and suggest improvements. Pay attention to error handling and edge cases in the auth middleware."),
-        system_prompt: Some("You are a senior software engineer conducting code reviews. Be constructive and specific."),
+        user_message: Some("Review the pull request diff and suggest improvements for the auth middleware."),
+        system_prompt: Some("You are a senior software engineer conducting code reviews."),
         stream: false,
         pii: false,
         policy: "allow",
         identity_narrative: Some("Code review bot integrated with GitHub CI pipeline"),
-        identity_timeline: Some("PR #482 opened -> webhook -> review_request"),
+        tool_name: Some("code_review"),
     },
     Scenario {
         process_name: "python3",
@@ -78,7 +79,7 @@ const SCENARIOS: &[Scenario] = &[
         pii: false,
         policy: "audit",
         identity_narrative: Some("MCP tool orchestrator invoking local tools"),
-        identity_timeline: Some("tools/list -> tools/call:search -> tools/call:summarize"),
+        tool_name: None,
     },
     Scenario {
         process_name: "curl",
@@ -91,13 +92,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 11434,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Translate the following error log from Japanese to English and summarize the root cause."),
+        user_message: Some("Translate the following error log from Japanese to English."),
         system_prompt: None,
         stream: false,
         pii: false,
         policy: "allow",
         identity_narrative: None,
-        identity_timeline: None,
+        tool_name: None,
     },
     Scenario {
         process_name: "java",
@@ -110,13 +111,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Generate a JIRA ticket description for the payment processing timeout bug affecting checkout in EU regions."),
-        system_prompt: Some("You are a project management assistant. Write clear, actionable ticket descriptions."),
+        user_message: Some("Generate a JIRA ticket for the payment processing timeout bug."),
+        system_prompt: Some("You are a project management assistant."),
         stream: true,
         pii: false,
         policy: "audit",
         identity_narrative: Some("Enterprise ticketing integration via Azure OpenAI"),
-        identity_timeline: Some("alert_trigger -> triage -> generate_ticket"),
+        tool_name: Some("create_ticket"),
     },
     Scenario {
         process_name: "python3",
@@ -129,13 +130,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Classify the sentiment of these 50 customer support tickets and group them by urgency level."),
-        system_prompt: Some("You are a customer support analyst. Classify tickets as positive/neutral/negative and urgency as low/medium/high/critical."),
+        user_message: Some("Classify the sentiment of these 50 customer support tickets."),
+        system_prompt: Some("You are a customer support analyst."),
         stream: false,
         pii: false,
         policy: "allow",
         identity_narrative: Some("Batch sentiment classifier for support queue"),
-        identity_timeline: Some("fetch_tickets -> classify_batch -> write_results"),
+        tool_name: None,
     },
     Scenario {
         process_name: "node",
@@ -148,13 +149,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Write a Python script to parse CSV files and generate a summary report with statistics."),
+        user_message: Some("Write a Python script to parse CSV files and generate a summary."),
         system_prompt: None,
         stream: true,
         pii: false,
         policy: "audit",
         identity_narrative: None,
-        identity_timeline: None,
+        tool_name: None,
     },
     Scenario {
         process_name: "python3",
@@ -173,7 +174,7 @@ const SCENARIOS: &[Scenario] = &[
         pii: false,
         policy: "allow",
         identity_narrative: Some("Embedding pipeline for document search index"),
-        identity_timeline: Some("load_docs -> chunk -> embed -> store_vectors"),
+        tool_name: None,
     },
     Scenario {
         process_name: "node",
@@ -186,13 +187,13 @@ const SCENARIOS: &[Scenario] = &[
         dst_port: 443,
         mcp_method: None,
         mcp_category: None,
-        user_message: Some("Here is John Smith's SSN 123-45-6789 and his medical records from Dr. Wilson. Please summarize his health history."),
+        user_message: Some("Here is John Smith's SSN 123-45-6789 and his medical records. Please summarize."),
         system_prompt: Some("You are a medical records assistant."),
         stream: false,
         pii: true,
         policy: "deny",
         identity_narrative: Some("Unauthorized medical data pipeline leaking PII"),
-        identity_timeline: Some("scrape_records -> extract_pii -> send_to_llm"),
+        tool_name: None,
     },
 ];
 
@@ -205,136 +206,198 @@ fn now_timestamp() -> String {
     let minutes = (total_secs / 60) % 60;
     let seconds = total_secs % 60;
     let millis = dur.subsec_millis();
-    format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
 }
 
-fn make_event(scenario: &Scenario, event_type: &str, bytes: u64) -> ProcessedEvent {
-    let is_tls = event_type.starts_with("TLS_DATA_");
-    let is_write = event_type == "TLS_DATA_WRITE";
-    ProcessedEvent {
-        event_type: event_type.to_string(),
-        timestamp: now_timestamp(),
+fn make_process(scenario: &Scenario) -> ProcessInfo {
+    ProcessInfo {
         pid: scenario.pid,
         uid: 1000,
-        process_name: scenario.process_name.to_string(),
-        src_ip: "192.168.1.100".to_string(),
-        src_port: 40000 + (scenario.pid as u16 % 10000),
-        dst_ip: scenario.dst_ip.to_string(),
-        dst_port: scenario.dst_port,
-        bytes,
-        provider: Some(scenario.provider.to_string()),
-        policy: Some(scenario.policy.to_string()),
+        name: scenario.process_name.to_string(),
         container_id: String::new(),
         cgroup_id: 0,
-        request_rate: Some(2.5),
-        session_bytes: Some(bytes),
         pod_name: None,
         pod_namespace: None,
         service_account: None,
-        ml_confidence: None,
-        ml_provider: None,
-        behavior_class: None,
-        cluster_id: None,
-        sni: Some(scenario.sni.to_string()),
-        tls_protocol: if is_tls {
-            Some("LLM_API".to_string())
-        } else {
-            None
-        },
-        tls_details: if is_tls {
-            scenario
-                .model
-                .map(|m| format!("{} model={}", scenario.provider, m))
-        } else {
-            None
-        },
-        tls_payload: None,
-        content_class: if is_tls {
-            Some("LLM_API".to_string())
-        } else {
-            None
-        },
-        llm_provider: Some(scenario.provider.to_string()),
-        llm_endpoint: if is_tls {
-            Some("/v1/chat/completions".to_string())
-        } else {
-            None
-        },
-        llm_model: scenario.model.map(|s| s.to_string()),
-        mcp_method: scenario.mcp_method.map(|s| s.to_string()),
-        mcp_category: scenario.mcp_category.map(|s| s.to_string()),
-        agent_sdk: scenario.sdk.map(|s| s.to_string()),
-        agent_fingerprint: Some(0xdeadbeef),
-        classifier_confidence: if is_tls { Some(0.95) } else { None },
-        pii_detected: if is_tls { Some(scenario.pii) } else { None },
-        llm_user_message: if is_write {
-            scenario.user_message.map(|s| s.to_string())
-        } else {
-            None
-        },
-        llm_system_prompt: if is_write {
-            scenario.system_prompt.map(|s| s.to_string())
-        } else {
-            None
-        },
-        llm_messages_json: None,
-        llm_stream: if is_tls { Some(scenario.stream) } else { None },
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: if is_tls {
-            scenario.identity_narrative.map(|s| s.to_string())
-        } else {
-            None
-        },
-        identity_timeline: if is_tls {
-            scenario.identity_timeline.map(|s| s.to_string())
-        } else {
-            None
-        },
-        identity_timeline_len: if is_tls {
-            scenario.identity_timeline.map(|s| s.split(" -> ").count())
-        } else {
-            None
-        },
-        agent_sdk_hash: None,
-        agent_model_hash: None,
     }
 }
 
-pub fn start(tx: mpsc::Sender<ProcessedEvent>) {
-    std::thread::spawn(move || {
-        let mut cycle = 0usize;
-        loop {
-            let scenario = &SCENARIOS[cycle % SCENARIOS.len()];
+fn make_identity(scenario: &Scenario) -> Option<IdentityInfo> {
+    scenario
+        .identity_narrative
+        .as_ref()
+        .map(|narrative| IdentityInfo {
+            id: scenario.pid as u64 * 0x1234567,
+            instance: format!("pid:{}", scenario.pid),
+            confidence: 0.85,
+            match_type: Some("CompositeMatch(0.85)".into()),
+            narrative: Some(narrative.to_string()),
+            timeline: None,
+            timeline_len: Some(5),
+            prompt_fingerprint: None,
+            behavioral_digest: None,
+            capability_hash: None,
+            graph_node_count: Some(12),
+            graph_edge_count: Some(18),
+        })
+}
 
-            // TCP_CONNECT
-            let event = make_event(scenario, "TCP_CONNECT", 0);
-            if tx.send(event).is_err() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+fn session_id(scenario: &Scenario) -> String {
+    format!("{}:{:x}", scenario.pid, scenario.pid as u64 * 0xBEEF)
+}
 
-            // TLS_DATA_WRITE (request)
-            let request_bytes = 256 + (cycle as u64 * 37) % 512;
-            let event = make_event(scenario, "TLS_DATA_WRITE", request_bytes);
-            if tx.send(event).is_err() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
+fn make_connect(scenario: &Scenario) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: None,
+        policy: None,
+        action: AgenticAction::Network {
+            kind: NetworkEventKind::Connect,
+            src_ip: "192.168.1.100".into(),
+            src_port: 40000 + (scenario.pid as u16 % 10000),
+            dst_ip: scenario.dst_ip.into(),
+            dst_port: scenario.dst_port,
+            bytes: 0,
+            sni: Some(scenario.sni.into()),
+            provider: Some(scenario.provider.into()),
+        },
+    }
+}
 
-            // TLS_DATA_READ (response)
-            let response_bytes = 1024 + (cycle as u64 * 73) % 4096;
-            let event = make_event(scenario, "TLS_DATA_READ", response_bytes);
-            if tx.send(event).is_err() {
-                return;
-            }
+fn make_prompt(scenario: &Scenario, bytes: u64) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some(scenario.policy.into()),
+        action: AgenticAction::Prompt {
+            provider: scenario.provider.into(),
+            model: scenario.model.map(|s| s.into()),
+            user_message: scenario.user_message.map(|s| s.into()),
+            system_prompt: scenario.system_prompt.map(|s| s.into()),
+            stream: scenario.stream,
+            sdk: scenario.sdk.map(|s| s.into()),
+            bytes,
+            sni: Some(scenario.sni.into()),
+            endpoint: Some("/v1/chat/completions".into()),
+            fingerprint: Some(0xdeadbeef),
+            pii_detected: Some(scenario.pii),
+            confidence: Some(0.95),
+            sdk_hash: None,
+            model_hash: None,
+        },
+    }
+}
 
-            cycle += 1;
+fn make_response(scenario: &Scenario, bytes: u64) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some(scenario.policy.into()),
+        action: AgenticAction::Response {
+            provider: scenario.provider.into(),
+            model: scenario.model.map(|s| s.into()),
+            bytes,
+            sni: Some(scenario.sni.into()),
+            confidence: Some(0.95),
+        },
+    }
+}
 
-            // 300-500ms between scenarios
-            let delay = 300 + (cycle * 29) % 200;
-            std::thread::sleep(Duration::from_millis(delay as u64));
+fn make_tool_call(scenario: &Scenario) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some(scenario.policy.into()),
+        action: AgenticAction::ToolCall {
+            tool_name: scenario.tool_name.unwrap_or("unknown").into(),
+            input_json: Some(r#"{"query": "recent changes"}"#.into()),
+            provider: scenario.provider.into(),
+        },
+    }
+}
+
+fn make_mcp_request(scenario: &Scenario) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some(scenario.policy.into()),
+        action: AgenticAction::McpRequest {
+            method: scenario.mcp_method.unwrap_or("tools/call").into(),
+            category: scenario.mcp_category.map(|s| s.into()),
+            params_preview: Some(r#"{"name": "search_docs"}"#.into()),
+        },
+    }
+}
+
+fn make_mcp_response(scenario: &Scenario) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some(scenario.policy.into()),
+        action: AgenticAction::McpResponse {
+            method: scenario.mcp_method.unwrap_or("tools/call").into(),
+            result_preview: Some(r#"{"content": [{"text": "Found 3 results"}]}"#.into()),
+        },
+    }
+}
+
+fn make_pii_detected(scenario: &Scenario) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: make_process(scenario),
+        session_id: session_id(scenario),
+        identity: make_identity(scenario),
+        policy: Some("deny".into()),
+        action: AgenticAction::PiiDetected {
+            direction: "write".into(),
+            pii_types: Some(vec!["ssn".into(), "medical_record".into()]),
+        },
+    }
+}
+
+/// Generate a batch of demo events for the given cycle.
+/// Returns a Vec of (event, delay_ms_after) pairs.
+pub fn generate_batch(cycle: usize) -> Vec<(BustedEvent, u64)> {
+    let scenario = &SCENARIOS[cycle % SCENARIOS.len()];
+    let mut batch = Vec::new();
+
+    // 1. Connect
+    batch.push((make_connect(scenario), 50));
+
+    // 2. MCP or Prompt
+    if scenario.mcp_method.is_some() {
+        batch.push((make_mcp_request(scenario), 100));
+        batch.push((make_mcp_response(scenario), 0));
+    } else {
+        let request_bytes = 256 + (cycle as u64 * 37) % 512;
+        batch.push((make_prompt(scenario, request_bytes), 100));
+
+        // 3. Optional tool call
+        if scenario.tool_name.is_some() {
+            batch.push((make_tool_call(scenario), 80));
         }
-    });
+
+        // 4. PII detection
+        if scenario.pii {
+            batch.push((make_pii_detected(scenario), 50));
+        }
+
+        // 5. Response
+        let response_bytes = 1024 + (cycle as u64 * 73) % 4096;
+        batch.push((make_response(scenario, response_bytes), 0));
+    }
+
+    batch
 }

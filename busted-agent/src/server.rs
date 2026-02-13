@@ -1,4 +1,4 @@
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::BustedEvent;
 use log::{info, warn};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 
 const SOCKET_PATH: &str = "/tmp/busted.sock";
 
-pub async fn run_socket_server(mut rx: broadcast::Receiver<ProcessedEvent>) {
+pub async fn run_socket_server(mut rx: broadcast::Receiver<BustedEvent>) {
     // Remove stale socket file
     if Path::new(SOCKET_PATH).exists() {
         let _ = std::fs::remove_file(SOCKET_PATH);
@@ -30,7 +30,7 @@ pub async fn run_socket_server(mut rx: broadcast::Receiver<ProcessedEvent>) {
     info!("UI socket server listening on {}", SOCKET_PATH);
 
     // Track connected clients via their own broadcast receivers
-    let (client_tx, _) = broadcast::channel::<ProcessedEvent>(1024);
+    let (client_tx, _) = broadcast::channel::<BustedEvent>(1024);
     let client_tx_clone = client_tx.clone();
 
     // Forward events from the main broadcast to the client broadcast

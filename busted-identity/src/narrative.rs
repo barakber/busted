@@ -113,6 +113,9 @@ mod tests {
             label: "openai-python (gpt-4)".into(),
             active_instances: vec![],
             providers: vec![],
+            behavioral_digest: None,
+            capability_hash: None,
+            prompt_fingerprint: None,
         }
     }
 

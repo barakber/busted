@@ -25,13 +25,13 @@
 //!
 //! - **eBPF side** (`no_std`, default) — just the wire types, nothing else.
 //! - **Userspace side** (`user` feature) — adds `aya::Pod` impls, serde, IP-to-string
-//!   helpers, and the enriched [`processed::ProcessedEvent`] that the rest of the system
+//!   helpers, and the enriched [`agentic::BustedEvent`] that the rest of the system
 //!   consumes.
 //!
 //! # How data flows
 //!
 //! ```text
-//! ┌──────────────┐     #[repr(C)]      ┌──────────────┐     ProcessedEvent     ┌─────────┐
+//! ┌──────────────┐     #[repr(C)]      ┌──────────────┐      BustedEvent       ┌─────────┐
 //! │  eBPF probes │ ──── structs ──────▶ │ busted-agent │ ──── (NDJSON) ──────▶ │ UI/SIEM │
 //! │  (kernel)    │     via RingBuf      │ (userspace)  │     via Unix socket   │         │
 //! └──────────────┘                      └──────────────┘                       └─────────┘
@@ -39,14 +39,14 @@
 //!
 //! The eBPF probes write [`NetworkEvent`], [`TlsHandshakeEvent`], or [`TlsDataEvent`]
 //! into a shared ring buffer. The agent reads them out (using aya's `Pod` trait, enabled
-//! by the `user` feature), enriches them into a [`processed::ProcessedEvent`], and
+//! by the `user` feature), enriches them into a [`agentic::BustedEvent`], and
 //! serializes that as NDJSON over a Unix socket.
 //!
 //! # Feature Flags
 //!
 //! - **`user`** — Enables userspace-only functionality:
 //!   - [`aya::Pod`] trait implementations for all event types (required by aya map APIs)
-//!   - [`serde::Serialize`] / [`serde::Deserialize`] on [`processed::ProcessedEvent`]
+//!   - [`serde::Serialize`] / [`serde::Deserialize`] on [`agentic::BustedEvent`]
 //!   - Helper methods for IP address conversion, string extraction, etc.
 //!     (in the [`userspace`] module)
 //!
@@ -59,7 +59,7 @@
 //! | [`TlsDataEvent`] | Decrypted TLS payload from `SSL_write`/`SSL_read` uprobes |
 //! | [`TlsConnKey`] | Composite key `(pid, ssl_ptr)` for the TLS verdict map |
 //! | [`AgentIdentity`] | Identity record for processes communicating with LLM providers |
-//! | [`processed::ProcessedEvent`] | Enriched event for UI/SIEM consumption (requires `user` feature) |
+//! | [`agentic::BustedEvent`] | Enriched event for UI/SIEM consumption (requires `user` feature) |
 
 #![cfg_attr(not(feature = "user"), no_std)]
 
@@ -391,159 +391,347 @@ mod pod_impls {
     unsafe impl aya::Pod for TlsDataEvent {}
 }
 
-/// Enriched event types for userspace consumption (requires `user` feature).
+/// Typed agentic action model for userspace consumption (requires `user` feature).
+///
+/// Replaces the flat `ProcessedEvent` with a structured event type where each
+/// action variant carries only the fields relevant to that action.
 #[cfg(feature = "user")]
-pub mod processed {
+pub mod agentic {
     use serde::{Deserialize, Serialize};
 
-    /// Enriched event ready for UI display, SIEM export, and policy evaluation.
-    ///
-    /// Produced by the agent from raw eBPF events after classification, ML analysis,
-    /// and container/Kubernetes enrichment. Serialized as NDJSON over the Unix socket
-    /// to the UI and SIEM sinks.
+    /// Top-level event emitted by the agent. Each event represents one action
+    /// (a prompt, response, tool call, MCP request, network event, etc.).
     #[derive(Clone, Debug, Serialize, Deserialize)]
-    pub struct ProcessedEvent {
-        /// Event type string (e.g. `"TCP_CONNECT"`, `"TLS_DATA_WRITE"`).
-        pub event_type: String,
+    pub struct BustedEvent {
         /// Human-readable timestamp (`HH:MM:SS.mmm`).
         pub timestamp: String,
-        /// Process ID.
-        pub pid: u32,
-        /// User ID.
-        pub uid: u32,
-        /// Process/command name.
-        pub process_name: String,
-        /// Source IP address (string).
-        pub src_ip: String,
-        /// Source port.
-        pub src_port: u16,
-        /// Destination IP address (string).
-        pub dst_ip: String,
-        /// Destination port.
-        pub dst_port: u16,
-        /// Bytes transferred.
-        pub bytes: u64,
-        /// LLM provider name from IP/SNI classification.
-        pub provider: Option<String>,
+        /// Process that generated the event.
+        pub process: ProcessInfo,
+        /// Session identifier: `"{pid}:{ssl_ptr:x}"` for TLS, `"{pid}:net"` for network.
+        pub session_id: String,
+        /// Resolved identity (if identity tracking is enabled).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub identity: Option<IdentityInfo>,
         /// Policy decision (`"allow"`, `"audit"`, `"deny"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub policy: Option<String>,
-        /// Short container ID (first 12 hex chars).
+        /// The typed action.
+        pub action: AgenticAction,
+    }
+
+    /// Process metadata.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct ProcessInfo {
+        pub pid: u32,
+        pub uid: u32,
+        pub name: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         pub container_id: String,
-        /// Cgroup ID from the kernel.
         #[serde(default)]
         pub cgroup_id: u64,
-        /// Requests per second for this PID.
-        #[serde(default)]
-        pub request_rate: Option<f64>,
-        /// Cumulative bytes for this PID's session.
-        #[serde(default)]
-        pub session_bytes: Option<u64>,
-        /// Kubernetes pod name.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub pod_name: Option<String>,
-        /// Kubernetes namespace.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub pod_namespace: Option<String>,
-        /// Kubernetes service account.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub service_account: Option<String>,
-        /// ML classifier confidence (0.0-1.0).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ml_confidence: Option<f64>,
-        /// ML-predicted provider name.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ml_provider: Option<String>,
-        /// ML behavioral class (e.g. `"LlmApi(OpenAI)"`).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub behavior_class: Option<String>,
-        /// HDBSCAN cluster ID (-1 = noise).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub cluster_id: Option<i32>,
-        /// TLS SNI hostname.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub sni: Option<String>,
-        /// TLS content class (e.g. `"LlmApi"`, `"Mcp"`).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub tls_protocol: Option<String>,
-        /// TLS classification details (provider, endpoint, model).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub tls_details: Option<String>,
-        /// Decrypted TLS payload (lossy UTF-8).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub tls_payload: Option<String>,
-        /// Content class from `busted-classifier`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub content_class: Option<String>,
-        /// LLM provider from content classification.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_provider: Option<String>,
-        /// LLM API endpoint identifier.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_endpoint: Option<String>,
-        /// LLM model name.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_model: Option<String>,
-        /// MCP method name.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub mcp_method: Option<String>,
-        /// MCP method category.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub mcp_category: Option<String>,
-        /// SDK/agent name and version.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub agent_sdk: Option<String>,
-        /// Behavioral signature hash.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub agent_fingerprint: Option<u64>,
-        /// Content classifier confidence (0.0-1.0).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub classifier_confidence: Option<f32>,
-        /// Whether PII was detected in the payload.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub pii_detected: Option<bool>,
+    }
 
-        // --- Parsed LLM request fields (from protocol-specific parsers) ---
-        /// The most recent user message text from the parsed LLM request.
-        /// This is the primary field for content-based policy rules.
+    /// Identity resolution metadata.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct IdentityInfo {
+        pub id: u64,
+        pub instance: String,
+        pub confidence: f32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_user_message: Option<String>,
-        /// System prompt / instructions from the LLM request.
+        pub match_type: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_system_prompt: Option<String>,
-        /// All conversation messages as JSON array (serialized `Vec<LlmMessage>`).
+        pub narrative: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_messages_json: Option<String>,
-        /// Whether the request is streaming.
+        pub timeline: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub llm_stream: Option<bool>,
+        pub timeline_len: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub prompt_fingerprint: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub behavioral_digest: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub capability_hash: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub graph_node_count: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub graph_edge_count: Option<usize>,
+    }
 
-        // --- Identity tracking (from busted-identity) ---
-        /// Stable identity ID for this agent type (FNV-1a of TypeKey).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_id: Option<u64>,
-        /// Instance key description (PID + container + cgroup).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_instance: Option<String>,
-        /// Identity match confidence (0.0–1.0).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_confidence: Option<f32>,
-        /// Human-readable narrative of agent activity.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_narrative: Option<String>,
-        /// Compact timeline summary (e.g. "LlmCall x12, McpCall x3").
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_timeline: Option<String>,
-        /// Number of events in the identity timeline.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub identity_timeline_len: Option<usize>,
+    /// Discriminated union of all agentic actions.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    #[serde(tag = "type")]
+    pub enum AgenticAction {
+        /// Outbound LLM API request (prompt).
+        Prompt {
+            provider: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            model: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            user_message: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            system_prompt: Option<String>,
+            #[serde(default)]
+            stream: bool,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sdk: Option<String>,
+            bytes: u64,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sni: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            endpoint: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            fingerprint: Option<u64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pii_detected: Option<bool>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            confidence: Option<f32>,
+            // Hash fields for identity resolution
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sdk_hash: Option<u32>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            model_hash: Option<u32>,
+        },
+        /// Inbound LLM API response.
+        Response {
+            provider: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            model: Option<String>,
+            bytes: u64,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sni: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            confidence: Option<f32>,
+        },
+        /// Tool call issued by the LLM in a response.
+        ToolCall {
+            tool_name: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            input_json: Option<String>,
+            provider: String,
+        },
+        /// Tool result sent back to the LLM in a request.
+        ToolResult {
+            tool_name: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            output_preview: Option<String>,
+        },
+        /// MCP JSON-RPC request.
+        McpRequest {
+            method: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            category: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            params_preview: Option<String>,
+        },
+        /// MCP JSON-RPC response.
+        McpResponse {
+            method: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            result_preview: Option<String>,
+        },
+        /// PII detected in payload.
+        PiiDetected {
+            direction: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pii_types: Option<Vec<String>>,
+        },
+        /// Network-level event (connect, close, data, DNS).
+        Network {
+            kind: NetworkEventKind,
+            src_ip: String,
+            src_port: u16,
+            dst_ip: String,
+            dst_port: u16,
+            bytes: u64,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            sni: Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            provider: Option<String>,
+        },
+    }
 
-        // --- Classifier hash fields ---
-        /// FNV-1a 32-bit hash of SDK name from fingerprint.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub agent_sdk_hash: Option<u32>,
-        /// FNV-1a 32-bit hash of model name from fingerprint.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub agent_model_hash: Option<u32>,
+    /// Sub-types for network events.
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    pub enum NetworkEventKind {
+        Connect,
+        Close,
+        DataSent,
+        DataReceived,
+        DnsQuery,
+    }
+
+    // ---- Convenience accessors ----
+
+    impl BustedEvent {
+        /// Provider name, if any action carries one.
+        pub fn provider(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { provider, .. } => Some(provider),
+                AgenticAction::Response { provider, .. } => Some(provider),
+                AgenticAction::ToolCall { provider, .. } => Some(provider),
+                AgenticAction::Network { provider, .. } => provider.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// Model name, if available.
+        pub fn model(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { model, .. } => model.as_deref(),
+                AgenticAction::Response { model, .. } => model.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// SDK string, if available.
+        pub fn sdk(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { sdk, .. } => sdk.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// System prompt, if available.
+        pub fn system_prompt(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { system_prompt, .. } => system_prompt.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// User message, if available.
+        pub fn user_message(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { user_message, .. } => user_message.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// SNI hostname, if available.
+        pub fn sni(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::Prompt { sni, .. } => sni.as_deref(),
+                AgenticAction::Response { sni, .. } => sni.as_deref(),
+                AgenticAction::Network { sni, .. } => sni.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// SDK hash for identity resolution.
+        pub fn sdk_hash(&self) -> Option<u32> {
+            match &self.action {
+                AgenticAction::Prompt { sdk_hash, .. } => *sdk_hash,
+                _ => None,
+            }
+        }
+
+        /// Model hash for identity resolution.
+        pub fn model_hash(&self) -> Option<u32> {
+            match &self.action {
+                AgenticAction::Prompt { model_hash, .. } => *model_hash,
+                _ => None,
+            }
+        }
+
+        /// Fingerprint (signature hash) for identity resolution.
+        pub fn fingerprint(&self) -> Option<u64> {
+            match &self.action {
+                AgenticAction::Prompt { fingerprint, .. } => *fingerprint,
+                _ => None,
+            }
+        }
+
+        /// MCP method, if applicable.
+        pub fn mcp_method(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::McpRequest { method, .. } => Some(method),
+                AgenticAction::McpResponse { method, .. } => Some(method),
+                _ => None,
+            }
+        }
+
+        /// MCP category, if applicable.
+        pub fn mcp_category(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::McpRequest { category, .. } => category.as_deref(),
+                _ => None,
+            }
+        }
+
+        /// Whether PII was detected.
+        pub fn pii_detected(&self) -> bool {
+            matches!(&self.action, AgenticAction::PiiDetected { .. })
+                || matches!(
+                    &self.action,
+                    AgenticAction::Prompt {
+                        pii_detected: Some(true),
+                        ..
+                    }
+                )
+        }
+
+        /// Short action type label for display.
+        pub fn action_type(&self) -> &'static str {
+            match &self.action {
+                AgenticAction::Prompt { .. } => "Prompt",
+                AgenticAction::Response { .. } => "Response",
+                AgenticAction::ToolCall { .. } => "ToolCall",
+                AgenticAction::ToolResult { .. } => "ToolResult",
+                AgenticAction::McpRequest { .. } => "McpRequest",
+                AgenticAction::McpResponse { .. } => "McpResponse",
+                AgenticAction::PiiDetected { .. } => "PiiDetected",
+                AgenticAction::Network { .. } => "Network",
+            }
+        }
+
+        /// Bytes transferred, if relevant.
+        pub fn bytes(&self) -> u64 {
+            match &self.action {
+                AgenticAction::Prompt { bytes, .. } => *bytes,
+                AgenticAction::Response { bytes, .. } => *bytes,
+                AgenticAction::Network { bytes, .. } => *bytes,
+                _ => 0,
+            }
+        }
+
+        /// Content class string for backward compatibility.
+        pub fn content_class(&self) -> Option<&'static str> {
+            match &self.action {
+                AgenticAction::Prompt { .. } => Some("LlmApi"),
+                AgenticAction::Response { .. } => Some("LlmApi"),
+                AgenticAction::ToolCall { .. } => Some("LlmApi"),
+                AgenticAction::ToolResult { .. } => Some("LlmApi"),
+                AgenticAction::McpRequest { .. } => Some("Mcp"),
+                AgenticAction::McpResponse { .. } => Some("Mcp"),
+                _ => None,
+            }
+        }
+
+        /// Event type string for backward compatibility with OPA policies.
+        pub fn event_type(&self) -> &'static str {
+            match &self.action {
+                AgenticAction::Prompt { .. } => "PROMPT",
+                AgenticAction::Response { .. } => "RESPONSE",
+                AgenticAction::ToolCall { .. } => "TOOL_CALL",
+                AgenticAction::ToolResult { .. } => "TOOL_RESULT",
+                AgenticAction::McpRequest { .. } => "MCP_REQUEST",
+                AgenticAction::McpResponse { .. } => "MCP_RESPONSE",
+                AgenticAction::PiiDetected { .. } => "PII_DETECTED",
+                AgenticAction::Network { kind, .. } => match kind {
+                    NetworkEventKind::Connect => "TCP_CONNECT",
+                    NetworkEventKind::Close => "CONNECTION_CLOSED",
+                    NetworkEventKind::DataSent => "DATA_SENT",
+                    NetworkEventKind::DataReceived => "DATA_RECEIVED",
+                    NetworkEventKind::DnsQuery => "DNS_QUERY",
+                },
+            }
+        }
     }
 }
 

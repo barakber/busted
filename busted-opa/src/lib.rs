@@ -1,6 +1,6 @@
 //! OPA/Rego policy engine for LLM communication governance.
 //!
-//! Evaluates [`ProcessedEvent`]s against user-defined Rego policies and returns
+//! Evaluates [`BustedEvent`]s against user-defined Rego policies and returns
 //! allow / audit / deny decisions with human-readable reasons.
 //!
 //! # Quick start
@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::BustedEvent;
 use log::{debug, info, warn};
 
 /// Policy action returned by Rego evaluation.
@@ -76,7 +76,7 @@ impl PolicyEngine {
         })
     }
 
-    /// Evaluate a [`ProcessedEvent`] against loaded policies.
+    /// Evaluate a [`BustedEvent`] against loaded policies.
     ///
     /// The event is serialized to JSON and set as `input`. The engine then
     /// queries `data.busted.decision` for the action and
@@ -84,9 +84,8 @@ impl PolicyEngine {
     ///
     /// If no policies are loaded, or the query returns an unexpected value,
     /// the default is `Action::Allow` with no reasons.
-    pub fn evaluate(&mut self, event: &ProcessedEvent) -> Result<PolicyDecision> {
-        let input_json =
-            serde_json::to_string(event).context("Failed to serialize ProcessedEvent")?;
+    pub fn evaluate(&mut self, event: &BustedEvent) -> Result<PolicyDecision> {
+        let input_json = serde_json::to_string(event).context("Failed to serialize BustedEvent")?;
         self.engine.set_input_json(&input_json)?;
 
         let action = self.query_action()?;
@@ -245,117 +244,129 @@ fn parse_reasons(value: &regorus::Value) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busted_types::agentic::{AgenticAction, IdentityInfo, NetworkEventKind, ProcessInfo};
     use std::io::Write;
 
     // ---- Helpers ----
 
-    /// Baseline event: TCP_CONNECT to OpenAI on port 443.
-    pub(crate) fn sample_event() -> ProcessedEvent {
-        ProcessedEvent {
-            event_type: "TCP_CONNECT".into(),
+    /// Baseline event: Network Connect to OpenAI on port 443.
+    pub(crate) fn sample_event() -> BustedEvent {
+        BustedEvent {
             timestamp: "12:00:00.000".into(),
-            pid: 1234,
-            uid: 1000,
-            process_name: "curl".into(),
-            src_ip: "10.0.0.1".into(),
-            src_port: 54321,
-            dst_ip: "104.18.1.1".into(),
-            dst_port: 443,
-            bytes: 512,
-            provider: Some("OpenAI".into()),
+            process: ProcessInfo {
+                pid: 1234,
+                uid: 1000,
+                name: "curl".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1234:net".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            ml_confidence: None,
-            ml_provider: None,
-            behavior_class: None,
-            cluster_id: None,
-            sni: None,
-            tls_protocol: None,
-            tls_details: None,
-            tls_payload: None,
-            content_class: None,
-            llm_provider: Some("OpenAI".into()),
-            llm_endpoint: None,
-            llm_model: None,
-            mcp_method: None,
-            mcp_category: None,
-            agent_sdk: None,
-            agent_fingerprint: None,
-            classifier_confidence: None,
-            pii_detected: None,
-            llm_user_message: None,
-            llm_system_prompt: None,
-            llm_messages_json: None,
-            llm_stream: None,
-            identity_id: None,
-            identity_instance: None,
-            identity_confidence: None,
-            identity_narrative: None,
-            identity_timeline: None,
-            identity_timeline_len: None,
-            agent_sdk_hash: None,
-            agent_model_hash: None,
+            action: AgenticAction::Network {
+                kind: NetworkEventKind::Connect,
+                src_ip: "10.0.0.1".into(),
+                src_port: 54321,
+                dst_ip: "104.18.1.1".into(),
+                dst_port: 443,
+                bytes: 512,
+                sni: None,
+                provider: Some("OpenAI".into()),
+            },
         }
     }
 
-    /// Minimal event: no provider, no PII, no classifier fields — pure background traffic.
-    fn bare_event() -> ProcessedEvent {
-        ProcessedEvent {
-            event_type: "TCP_SENDMSG".into(),
+    /// Minimal event: no provider, no PII — pure background traffic.
+    fn bare_event() -> BustedEvent {
+        BustedEvent {
             timestamp: "00:00:00.000".into(),
-            pid: 1,
-            uid: 0,
-            process_name: "nginx".into(),
-            src_ip: "10.0.0.1".into(),
-            src_port: 80,
-            dst_ip: "10.0.0.2".into(),
-            dst_port: 8080,
-            bytes: 64,
-            provider: None,
+            process: ProcessInfo {
+                pid: 1,
+                uid: 0,
+                name: "nginx".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1:net".into(),
+            identity: None,
             policy: None,
-            container_id: String::new(),
-            cgroup_id: 0,
-            request_rate: None,
-            session_bytes: None,
-            pod_name: None,
-            pod_namespace: None,
-            service_account: None,
-            ml_confidence: None,
-            ml_provider: None,
-            behavior_class: None,
-            cluster_id: None,
-            sni: None,
-            tls_protocol: None,
-            tls_details: None,
-            tls_payload: None,
-            content_class: None,
-            llm_provider: None,
-            llm_endpoint: None,
-            llm_model: None,
-            mcp_method: None,
-            mcp_category: None,
-            agent_sdk: None,
-            agent_fingerprint: None,
-            classifier_confidence: None,
-            pii_detected: None,
-            llm_user_message: None,
-            llm_system_prompt: None,
-            llm_messages_json: None,
-            llm_stream: None,
-            identity_id: None,
-            identity_instance: None,
-            identity_confidence: None,
-            identity_narrative: None,
-            identity_timeline: None,
-            identity_timeline_len: None,
-            agent_sdk_hash: None,
-            agent_model_hash: None,
+            action: AgenticAction::Network {
+                kind: NetworkEventKind::DataSent,
+                src_ip: "10.0.0.1".into(),
+                src_port: 80,
+                dst_ip: "10.0.0.2".into(),
+                dst_port: 8080,
+                bytes: 64,
+                sni: None,
+                provider: None,
+            },
+        }
+    }
+
+    /// Sample LLM prompt event with pii_detected and model fields.
+    fn sample_prompt_event() -> BustedEvent {
+        BustedEvent {
+            timestamp: "12:00:00.000".into(),
+            process: ProcessInfo {
+                pid: 1234,
+                uid: 1000,
+                name: "python".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "1234:abc".into(),
+            identity: None,
+            policy: None,
+            action: AgenticAction::Prompt {
+                provider: "OpenAI".into(),
+                model: Some("gpt-4o".into()),
+                user_message: None,
+                system_prompt: None,
+                stream: false,
+                sdk: None,
+                bytes: 512,
+                sni: Some("api.openai.com".into()),
+                endpoint: None,
+                fingerprint: None,
+                pii_detected: None,
+                confidence: None,
+                sdk_hash: None,
+                model_hash: None,
+            },
+        }
+    }
+
+    /// Sample MCP request event.
+    fn sample_mcp_event() -> BustedEvent {
+        BustedEvent {
+            timestamp: "12:00:00.000".into(),
+            process: ProcessInfo {
+                pid: 3456,
+                uid: 1000,
+                name: "mcp-client".into(),
+                container_id: String::new(),
+                cgroup_id: 0,
+                pod_name: None,
+                pod_namespace: None,
+                service_account: None,
+            },
+            session_id: "3456:mcp".into(),
+            identity: None,
+            policy: None,
+            action: AgenticAction::McpRequest {
+                method: "tools/call".into(),
+                category: Some("Tools".into()),
+                params_preview: None,
+            },
         }
     }
 
@@ -502,7 +513,7 @@ default decision = "allow"
     #[test]
     fn multiple_rego_files_loaded() {
         let dir = tempfile::tempdir().unwrap();
-        // File 1: defines decision
+        // File 1: defines decision (check pii_detected on Prompt action)
         write_rego(
             dir.path(),
             "decision.rego",
@@ -510,7 +521,7 @@ default decision = "allow"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
+    input.action.pii_detected == true
 }
 "#,
         );
@@ -521,15 +532,21 @@ decision = "deny" {
             r#"
 package busted
 reasons[r] {
-    input.pii_detected == true
+    input.action.pii_detected == true
     r := "PII detected"
 }
 "#,
         );
 
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
-        let mut event = sample_event();
-        event.pii_detected = Some(true);
+        let mut event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = event.action
+        {
+            *pii_detected = Some(true);
+        }
         let d = engine.evaluate(&event).unwrap();
         assert_eq!(d.action, Action::Deny);
         assert!(d.reasons.iter().any(|r| r.contains("PII")));
@@ -588,37 +605,41 @@ default decision = "quarantine"
     // ================================================================
 
     #[test]
-    fn deny_on_pii_with_provider() {
+    fn deny_on_pii_in_prompt() {
         let (_dir, mut engine) = engine_with(
             r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
-    input.provider != null
+    input.action.pii_detected == true
+    input.action.type == "Prompt"
 }
 reasons[reason] {
-    input.pii_detected == true
+    input.action.pii_detected == true
     reason := "PII detected in outbound LLM traffic"
 }
 "#,
         );
 
-        // PII + provider → deny
-        let mut event = sample_event();
-        event.pii_detected = Some(true);
+        // PII in Prompt → deny
+        let mut event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = event.action
+        {
+            *pii_detected = Some(true);
+        }
         let d = engine.evaluate(&event).unwrap();
         assert_eq!(d.action, Action::Deny);
         assert!(d.reasons.iter().any(|r| r.contains("PII")));
 
-        // No PII → allow
-        let d2 = engine.evaluate(&sample_event()).unwrap();
+        // No PII in Prompt → allow
+        let d2 = engine.evaluate(&sample_prompt_event()).unwrap();
         assert_eq!(d2.action, Action::Allow);
 
-        // PII but no provider → allow (both conditions needed)
-        let mut event3 = bare_event();
-        event3.pii_detected = Some(true);
-        let d3 = engine.evaluate(&event3).unwrap();
+        // Network event (no pii_detected field) → allow
+        let d3 = engine.evaluate(&sample_event()).unwrap();
         assert_eq!(d3.action, Action::Allow);
     }
 
@@ -629,15 +650,15 @@ reasons[reason] {
 package busted
 default decision = "allow"
 decision = "audit" {
-    input.provider != null
-    not input.pii_detected
+    input.action.provider != null
 }
 "#,
         );
+        // Network event with provider → audit
         let d = engine.evaluate(&sample_event()).unwrap();
         assert_eq!(d.action, Action::Audit);
 
-        // No provider → allow
+        // Network event without provider → allow
         let d2 = engine.evaluate(&bare_event()).unwrap();
         assert_eq!(d2.action, Action::Allow);
     }
@@ -653,7 +674,7 @@ decision = "audit" {
 package busted
 default decision = "deny"
 decision = "allow" {
-    input.provider == data.allowed_providers[_]
+    input.action.provider == data.allowed_providers[_]
 }
 "#,
             r#"{"allowed_providers": ["OpenAI", "Anthropic"]}"#,
@@ -665,13 +686,23 @@ decision = "allow" {
 
         // Anthropic → allowed
         let mut event2 = sample_event();
-        event2.provider = Some("Anthropic".into());
+        if let AgenticAction::Network {
+            ref mut provider, ..
+        } = event2.action
+        {
+            *provider = Some("Anthropic".into());
+        }
         let d2 = engine.evaluate(&event2).unwrap();
         assert_eq!(d2.action, Action::Allow);
 
         // Unknown → denied
         let mut event3 = sample_event();
-        event3.provider = Some("SomeUnknown".into());
+        if let AgenticAction::Network {
+            ref mut provider, ..
+        } = event3.action
+        {
+            *provider = Some("SomeUnknown".into());
+        }
         let d3 = engine.evaluate(&event3).unwrap();
         assert_eq!(d3.action, Action::Deny);
     }
@@ -683,7 +714,7 @@ decision = "allow" {
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.provider == data.blocked_providers[_]
+    input.action.provider == data.blocked_providers[_]
 }
 "#,
             r#"{"blocked_providers": ["DeepSeek"]}"#,
@@ -695,7 +726,12 @@ decision = "deny" {
 
         // DeepSeek → denied
         let mut event2 = sample_event();
-        event2.provider = Some("DeepSeek".into());
+        if let AgenticAction::Network {
+            ref mut provider, ..
+        } = event2.action
+        {
+            *provider = Some("DeepSeek".into());
+        }
         let d2 = engine.evaluate(&event2).unwrap();
         assert_eq!(d2.action, Action::Deny);
     }
@@ -707,8 +743,8 @@ decision = "deny" {
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.uid == data.restricted_uids[_]
-    input.provider != null
+    input.process.uid == data.restricted_uids[_]
+    input.action.provider != null
 }
 "#,
             r#"{"restricted_uids": [0, 1000, 65534]}"#,
@@ -720,7 +756,7 @@ decision = "deny" {
 
         // uid 2000 → allow
         let mut event2 = sample_event();
-        event2.uid = 2000;
+        event2.process.uid = 2000;
         let d2 = engine.evaluate(&event2).unwrap();
         assert_eq!(d2.action, Action::Allow);
     }
@@ -769,7 +805,7 @@ default decision = "deny"
 package busted
 default decision = "deny"
 decision = "allow" {
-    input.provider == data.ok[_]
+    input.action.provider == data.ok[_]
 }
 "#,
         );
@@ -808,10 +844,6 @@ default decision = "allow"
         write_rego(dir.path(), "test.rego", "totally broken {{{{");
         let result = engine.reload();
         assert!(result.is_err());
-
-        // Original engine should still work (reload didn't swap in broken engine)
-        // Actually, the reload creates a new engine and only swaps on success.
-        // Since reload failed, the old engine is preserved.
     }
 
     // ================================================================
@@ -836,15 +868,15 @@ default decision = "deny"
 package busted
 default decision = "audit"
 reasons[r] {
-    input.provider != null
+    input.action.provider != null
     r := "has provider"
 }
 reasons[r] {
-    input.llm_provider != null
-    r := "has llm_provider"
+    input.action.type == "Network"
+    r := "network event"
 }
 reasons[r] {
-    input.dst_port == 443
+    input.action.dst_port == 443
     r := "TLS port"
 }
 "#,
@@ -856,7 +888,7 @@ reasons[r] {
             d.reasons
         );
         assert!(d.reasons.contains(&"has provider".to_string()));
-        assert!(d.reasons.contains(&"has llm_provider".to_string()));
+        assert!(d.reasons.contains(&"network event".to_string()));
         assert!(d.reasons.contains(&"TLS port".to_string()));
     }
 
@@ -867,8 +899,8 @@ reasons[r] {
 package busted
 default decision = "audit"
 reasons[r] {
-    input.provider != null
-    r := concat("", ["Traffic to: ", input.provider])
+    input.action.provider != null
+    r := concat("", ["Traffic to: ", input.action.provider])
 }
 "#,
         );
@@ -878,16 +910,16 @@ reasons[r] {
 
     // ================================================================
     // Input field access — verify the Rego engine can see every
-    // ProcessedEvent field through the JSON serialization.
+    // BustedEvent field through the JSON serialization.
     // ================================================================
 
     #[test]
-    fn rego_sees_event_type() {
+    fn rego_sees_action_type() {
         let (_dir, mut engine) = engine_with(
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.event_type == "TCP_CONNECT" }
+decision = "deny" { input.action.type == "Network" }
 "#,
         );
         assert_eq!(
@@ -902,7 +934,7 @@ decision = "deny" { input.event_type == "TCP_CONNECT" }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pid == 1234; input.uid == 1000 }
+decision = "deny" { input.process.pid == 1234; input.process.uid == 1000 }
 "#,
         );
         assert_eq!(
@@ -917,7 +949,7 @@ decision = "deny" { input.pid == 1234; input.uid == 1000 }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.process_name == "curl" }
+decision = "deny" { input.process.name == "curl" }
 "#,
         );
         assert_eq!(
@@ -933,11 +965,11 @@ decision = "deny" { input.process_name == "curl" }
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.src_ip == "10.0.0.1"
-    input.src_port == 54321
-    input.dst_ip == "104.18.1.1"
-    input.dst_port == 443
-    input.bytes == 512
+    input.action.src_ip == "10.0.0.1"
+    input.action.src_port == 54321
+    input.action.dst_ip == "104.18.1.1"
+    input.action.dst_port == 443
+    input.action.bytes == 512
 }
 "#,
         );
@@ -953,11 +985,11 @@ decision = "deny" {
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.container_id == "abc123" }
+decision = "deny" { input.process.container_id == "abc123" }
 "#,
         );
         let mut event = sample_event();
-        event.container_id = "abc123".into();
+        event.process.container_id = "abc123".into();
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
     }
 
@@ -968,50 +1000,38 @@ decision = "deny" { input.container_id == "abc123" }
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pod_namespace == "production"
-    input.service_account == "llm-agent"
+    input.process.pod_namespace == "production"
+    input.process.service_account == "llm-agent"
 }
 "#,
         );
         let mut event = sample_event();
-        event.pod_namespace = Some("production".into());
-        event.service_account = Some("llm-agent".into());
+        event.process.pod_namespace = Some("production".into());
+        event.process.service_account = Some("llm-agent".into());
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
     }
 
     #[test]
-    fn rego_sees_ml_fields() {
-        let (_dir, mut engine) = engine_with(
-            r#"
-package busted
-default decision = "allow"
-decision = "audit" { input.ml_confidence > 0.9 }
-"#,
-        );
-        let mut event = sample_event();
-        event.ml_confidence = Some(0.95);
-        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
-
-        event.ml_confidence = Some(0.5);
-        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
-    }
-
-    #[test]
-    fn rego_sees_classifier_fields() {
+    fn rego_sees_prompt_model() {
         let (_dir, mut engine) = engine_with(
             r#"
 package busted
 default decision = "allow"
 decision = "audit" {
-    input.content_class == "LlmApi"
-    input.llm_model == "gpt-4o"
+    input.action.type == "Prompt"
+    input.action.model == "gpt-4o"
 }
 "#,
         );
-        let mut event = sample_event();
-        event.content_class = Some("LlmApi".into());
-        event.llm_model = Some("gpt-4o".into());
-        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
+        assert_eq!(
+            engine.evaluate(&sample_prompt_event()).unwrap().action,
+            Action::Audit
+        );
+        // Network event has no model → allow
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Allow
+        );
     }
 
     #[test]
@@ -1020,12 +1040,18 @@ decision = "audit" {
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.mcp_method == "tools/call" }
+decision = "deny" { input.action.method == "tools/call" }
 "#,
         );
-        let mut event = bare_event();
-        event.mcp_method = Some("tools/call".into());
-        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
+        assert_eq!(
+            engine.evaluate(&sample_mcp_event()).unwrap().action,
+            Action::Deny
+        );
+        // Non-MCP event → allow
+        assert_eq!(
+            engine.evaluate(&sample_event()).unwrap().action,
+            Action::Allow
+        );
     }
 
     #[test]
@@ -1034,11 +1060,13 @@ decision = "deny" { input.mcp_method == "tools/call" }
             r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.sni == "api.openai.com" }
+decision = "audit" { input.action.sni == "api.openai.com" }
 "#,
         );
         let mut event = sample_event();
-        event.sni = Some("api.openai.com".into());
+        if let AgenticAction::Network { ref mut sni, .. } = event.action {
+            *sni = Some("api.openai.com".into());
+        }
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
     }
 
@@ -1048,16 +1076,22 @@ decision = "audit" { input.sni == "api.openai.com" }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pii_detected == false }
+decision = "deny" { input.action.pii_detected == false }
 "#,
         );
-        let mut event = sample_event();
-        event.pii_detected = Some(false);
+        let mut event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = event.action
+        {
+            *pii_detected = Some(false);
+        }
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
         // null (None) should NOT match == false
-        event.pii_detected = None;
-        assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
+        let event2 = sample_prompt_event();
+        assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Allow);
     }
 
     // ================================================================
@@ -1070,12 +1104,18 @@ decision = "deny" { input.pii_detected == false }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pii_detected == true }
+decision = "deny" { input.action.pii_detected == true }
 "#,
         );
 
-        let mut pii_event = sample_event();
-        pii_event.pii_detected = Some(true);
+        let mut pii_event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = pii_event.action
+        {
+            *pii_detected = Some(true);
+        }
         assert_eq!(engine.evaluate(&pii_event).unwrap().action, Action::Deny);
 
         // Second call with a clean event should allow
@@ -1094,12 +1134,12 @@ decision = "deny" { input.pii_detected == true }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.pid == 42 }
+decision = "deny" { input.process.pid == 42 }
 "#,
         );
-        for i in 0..100 {
+        for i in 0..100u32 {
             let mut event = bare_event();
-            event.pid = i;
+            event.process.pid = i;
             let expected = if i == 42 { Action::Deny } else { Action::Allow };
             assert_eq!(engine.evaluate(&event).unwrap().action, expected);
         }
@@ -1111,30 +1151,27 @@ decision = "deny" { input.pid == 42 }
 
     #[test]
     fn deny_takes_precedence_over_audit() {
-        // In Rego, when multiple rule bodies produce different values for
-        // the same variable, the result depends on rule ordering. We rely
-        // on "deny" being chosen when both "deny" and "audit" match because
-        // Rego's complete-rule semantics pick one. With the default.rego
-        // pattern, deny is checked first.
         let (_dir, mut engine) = engine_with(
             r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
+    input.action.pii_detected == true
 }
 decision = "audit" {
-    input.provider != null
+    input.action.provider != null
 }
 "#,
         );
 
-        // PII + provider → both rules fire, but deny is the value chosen
-        // because Rego complete rules with conflicts produce an error unless
-        // one is the default. However, in practice the engine picks "deny"
-        // since it evaluates first. Let's verify the engine doesn't error.
-        let mut event = sample_event();
-        event.pii_detected = Some(true);
+        let mut event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = event.action
+        {
+            *pii_detected = Some(true);
+        }
         let d = engine.evaluate(&event);
         // This may error (Rego conflict) or pick one value — verify no panic.
         assert!(d.is_ok() || d.is_err());
@@ -1152,7 +1189,6 @@ package not_busted
 default decision = "deny"
 "#,
         );
-        // data.busted.decision won't exist → default allow
         let d = engine.evaluate(&sample_event()).unwrap();
         assert_eq!(d.action, Action::Allow);
     }
@@ -1191,7 +1227,7 @@ decision = true
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { startswith(input.process_name, "cu") }
+decision = "deny" { startswith(input.process.name, "cu") }
 "#,
         );
         assert_eq!(
@@ -1200,7 +1236,7 @@ decision = "deny" { startswith(input.process_name, "cu") }
         );
 
         let mut event = sample_event();
-        event.process_name = "python".into();
+        event.process.name = "python".into();
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
 
@@ -1210,7 +1246,7 @@ decision = "deny" { startswith(input.process_name, "cu") }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { count(input.process_name) > 3 }
+decision = "deny" { count(input.process.name) > 3 }
 "#,
         );
         assert_eq!(
@@ -1219,7 +1255,7 @@ decision = "deny" { count(input.process_name) > 3 }
         );
 
         let mut event = sample_event();
-        event.process_name = "ls".into();
+        event.process.name = "ls".into();
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
 
@@ -1258,10 +1294,10 @@ default decision = "allow"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.pii_detected == true
+    input.action.pii_detected == true
 }
 reasons[r] {
-    input.pii_detected == true
+    input.action.pii_detected == true
     r := "PII detected in inline rule"
 }
 "#,
@@ -1271,8 +1307,14 @@ reasons[r] {
         let d = engine.evaluate(&sample_event()).unwrap();
         assert_eq!(d.action, Action::Allow);
 
-        let mut pii_event = sample_event();
-        pii_event.pii_detected = Some(true);
+        let mut pii_event = sample_prompt_event();
+        if let AgenticAction::Prompt {
+            ref mut pii_detected,
+            ..
+        } = pii_event.action
+        {
+            *pii_detected = Some(true);
+        }
         let d = engine.evaluate(&pii_event).unwrap();
         assert_eq!(d.action, Action::Deny);
         assert!(d.reasons.iter().any(|r| r.contains("PII")));
@@ -1285,7 +1327,7 @@ reasons[r] {
     }
 
     // ================================================================
-    // Rego builtin functions accessible
+    // More Rego builtins
     // ================================================================
 
     #[test]
@@ -1294,7 +1336,7 @@ reasons[r] {
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { regex.match("^10\\.0\\.", input.src_ip) }
+decision = "deny" { regex.match("^10\\.0\\.", input.action.src_ip) }
 "#,
         );
         assert_eq!(
@@ -1303,7 +1345,9 @@ decision = "deny" { regex.match("^10\\.0\\.", input.src_ip) }
         );
 
         let mut event = sample_event();
-        event.src_ip = "192.168.1.1".into();
+        if let AgenticAction::Network { ref mut src_ip, .. } = event.action {
+            *src_ip = "192.168.1.1".into();
+        }
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
 
@@ -1319,7 +1363,6 @@ decision = "deny" { regex.match("^10\\.0\\.", input.src_ip) }
 
     #[test]
     fn from_rego_with_import() {
-        // Rego with an import of non-existent data — regorus allows this
         let result = PolicyEngine::from_rego(
             r#"
 package busted
@@ -1338,19 +1381,17 @@ default decision = "allow"
 
     #[test]
     fn from_rego_referencing_data() {
-        // from_rego with a data.foo reference — data is empty, rule body fails → default
         let mut engine = PolicyEngine::from_rego(
             r#"
 package busted
 default decision = "allow"
 decision = "deny" {
-    input.provider == data.blocked[_]
+    input.action.provider == data.blocked[_]
 }
 "#,
         )
         .unwrap();
         let d = engine.evaluate(&sample_event()).unwrap();
-        // data.blocked doesn't exist → rule body fails → default allow
         assert_eq!(d.action, Action::Allow);
     }
 
@@ -1374,11 +1415,9 @@ default decision = "deny"
             Action::Deny
         );
 
-        // Remove all .rego files
         std::fs::remove_file(dir.path().join("test.rego")).unwrap();
         engine.reload().unwrap();
 
-        // Now should default to allow (no policies)
         let d = engine.evaluate(&sample_event()).unwrap();
         assert_eq!(d.action, Action::Allow);
         assert!(d.reasons.is_empty());
@@ -1394,22 +1433,19 @@ default decision = "deny"
 package busted
 default decision = "deny"
 decision = "allow" {
-    input.provider == data.ok[_]
+    input.action.provider == data.ok[_]
 }
 "#,
         );
-        // Start without data.json → data.ok doesn't exist → deny all
         let mut engine = PolicyEngine::new(dir.path()).unwrap();
         assert_eq!(
             engine.evaluate(&sample_event()).unwrap().action,
             Action::Deny
         );
 
-        // Add data.json with OpenAI in the list
         std::fs::write(dir.path().join("data.json"), r#"{"ok": ["OpenAI"]}"#).unwrap();
         engine.reload().unwrap();
 
-        // Now OpenAI should be allowed
         assert_eq!(
             engine.evaluate(&sample_event()).unwrap().action,
             Action::Allow
@@ -1435,7 +1471,6 @@ reasons[r] {
 "#,
         );
         let d = engine.evaluate(&sample_event()).unwrap();
-        // Numeric reason (42) should be silently ignored; only string reason kept
         assert_eq!(d.reasons.len(), 1);
         assert_eq!(d.reasons[0], "valid reason");
     }
@@ -1449,13 +1484,11 @@ decision = {"action": "deny"}
 "#,
         );
         let d = engine.evaluate(&sample_event()).unwrap();
-        // Object value is not a string → defaults to Allow
         assert_eq!(d.action, Action::Allow);
     }
 
     #[test]
     fn parse_reasons_handles_set_from_rego() {
-        // Test with a Rego rule that produces a Set value (standard `reasons[r]` syntax)
         let (_dir, mut engine) = engine_with(
             r#"
 package busted
@@ -1464,7 +1497,7 @@ reasons[r] {
     r := "set_reason_alpha"
 }
 reasons[r] {
-    input.provider != null
+    input.action.provider != null
     r := "set_reason_beta"
 }
 "#,
@@ -1480,27 +1513,24 @@ reasons[r] {
             "should contain set_reason_beta: {:?}",
             d.reasons
         );
-        // Multiple distinct reason rules should produce multiple reasons
         assert!(
             d.reasons.len() >= 2,
             "expected at least 2 reasons, got {:?}",
             d.reasons
         );
 
-        // Verify that when no reasons rules match, we get empty vec
         let mut engine2 = PolicyEngine::from_rego(
             r#"
 package busted
 default decision = "audit"
 reasons[r] {
-    input.provider == "NEVER_MATCHES"
+    input.action.provider == "NEVER_MATCHES"
     r := "should not appear"
 }
 "#,
         )
         .unwrap();
         let d2 = engine2.evaluate(&sample_event()).unwrap();
-        // reasons set is empty → should produce empty reasons vec
         assert!(
             d2.reasons.is_empty(),
             "non-matching reasons should be empty"
@@ -1517,14 +1547,27 @@ reasons[r] {
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.identity_timeline_len > 100 }
+decision = "deny" { input.identity.timeline_len > 100 }
 "#,
         );
         let mut event = sample_event();
-        event.identity_timeline_len = Some(150);
+        event.identity = Some(IdentityInfo {
+            id: 1,
+            instance: "test".into(),
+            confidence: 0.9,
+            match_type: None,
+            narrative: None,
+            timeline: None,
+            timeline_len: Some(150),
+            prompt_fingerprint: None,
+            behavioral_digest: None,
+            capability_hash: None,
+            graph_node_count: None,
+            graph_edge_count: None,
+        });
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-        event.identity_timeline_len = Some(50);
+        event.identity.as_mut().unwrap().timeline_len = Some(50);
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
 
@@ -1534,14 +1577,27 @@ decision = "deny" { input.identity_timeline_len > 100 }
             r#"
 package busted
 default decision = "allow"
-decision = "audit" { input.identity_confidence > 0.9 }
+decision = "audit" { input.identity.confidence > 0.9 }
 "#,
         );
         let mut event = sample_event();
-        event.identity_confidence = Some(0.95);
+        event.identity = Some(IdentityInfo {
+            id: 1,
+            instance: "test".into(),
+            confidence: 0.95,
+            match_type: None,
+            narrative: None,
+            timeline: None,
+            timeline_len: None,
+            prompt_fingerprint: None,
+            behavioral_digest: None,
+            capability_hash: None,
+            graph_node_count: None,
+            graph_edge_count: None,
+        });
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Audit);
 
-        event.identity_confidence = Some(0.5);
+        event.identity.as_mut().unwrap().confidence = 0.5;
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Allow);
     }
 
@@ -1551,14 +1607,27 @@ decision = "audit" { input.identity_confidence > 0.9 }
             r#"
 package busted
 default decision = "allow"
-decision = "deny" { input.identity_id != null }
+decision = "deny" { input.identity != null }
 "#,
         );
         let mut event = sample_event();
-        event.identity_id = Some(12345);
+        event.identity = Some(IdentityInfo {
+            id: 12345,
+            instance: "test".into(),
+            confidence: 0.8,
+            match_type: None,
+            narrative: None,
+            timeline: None,
+            timeline_len: None,
+            prompt_fingerprint: None,
+            behavioral_digest: None,
+            capability_hash: None,
+            graph_node_count: None,
+            graph_edge_count: None,
+        });
         assert_eq!(engine.evaluate(&event).unwrap().action, Action::Deny);
 
-        // null identity_id → allow
+        // null identity → allow
         assert_eq!(
             engine.evaluate(&sample_event()).unwrap().action,
             Action::Allow

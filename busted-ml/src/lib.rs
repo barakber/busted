@@ -67,7 +67,7 @@
 //! every [`NetworkEvent`] to [`MlClassifier::process_event`],
 //! along with any IP-based provider label it already has. The returned
 //! [`BehaviorIdentity`] is folded into the
-//! `ProcessedEvent` as `ml_confidence`,
+//! `BustedEvent` as `ml_confidence`,
 //! `ml_provider`, `behavior_class`, and `cluster_id` fields. This means the UI and SIEM
 //! sinks get both content-based *and* behavioral classifications for every connection.
 //!

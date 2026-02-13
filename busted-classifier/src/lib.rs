@@ -57,7 +57,7 @@
 //! In the Busted pipeline, `busted-agent` captures decrypted TLS payloads via eBPF
 //! uprobes, then calls [`classify()`] on the first chunk of each connection. The
 //! resulting [`Classification`] is folded into a
-//! `ProcessedEvent` and forwarded to the UI
+//! `BustedEvent` and forwarded to the UI
 //! and SIEM sinks. The crate has no dependency on eBPF or aya — it's a pure Rust
 //! library that works anywhere you have bytes to classify.
 //!
@@ -104,6 +104,10 @@ use pii::PiiFlags;
 
 pub use fingerprint::{fnv1a_32, ModelParams, SdkInfo};
 pub use mcp::{McpCategory, McpMsgType};
+pub use protocols::{
+    parse_llm_request, parse_llm_response, LlmRequestParsed, LlmResponseParsed, ToolCallParsed,
+    ToolResultParsed,
+};
 
 /// Direction of TLS data flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

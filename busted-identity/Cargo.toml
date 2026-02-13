@@ -15,3 +15,17 @@ categories = ["network-programming"]
 busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
 log = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Optional dependencies for advanced features
+busted-embed = { version = "0.1.0", path = "../busted-embed", optional = true }
+redb = { version = "3.1", optional = true }
+bincode = { version = "1", optional = true }
+petgraph = { version = "0.8", features = ["serde-1"], optional = true }
+
+[features]
+default = []
+semantic = ["dep:busted-embed"]
+persist = ["dep:redb", "dep:bincode"]
+graph = ["dep:petgraph"]
+full = ["semantic", "persist", "graph"]

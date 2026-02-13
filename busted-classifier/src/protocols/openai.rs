@@ -16,7 +16,7 @@
 //!
 //! Also covers compatible APIs: Azure OpenAI, Groq, Together, Mistral, DeepSeek, etc.
 
-use super::{LlmMessage, LlmRequestParsed};
+use super::{LlmMessage, LlmRequestParsed, LlmResponseParsed, ToolCallParsed, ToolResultParsed};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -34,6 +34,24 @@ struct OpenAiRequest {
 struct OpenAiMessage {
     role: String,
     content: Option<ContentField>,
+    /// Tool calls in assistant messages.
+    tool_calls: Option<Vec<ToolCallRaw>>,
+    /// Tool call ID for role="tool" messages (correlates with a tool_call).
+    tool_call_id: Option<String>,
+    /// Tool function name for role="tool" messages.
+    name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ToolCallRaw {
+    id: Option<String>,
+    function: Option<ToolCallFunction>,
+}
+
+#[derive(Deserialize)]
+struct ToolCallFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 /// Content can be a plain string or an array of content parts (vision/multimodal).
@@ -93,6 +111,22 @@ pub fn parse(body: &str) -> Option<LlmRequestParsed> {
         }
     };
 
+    // Extract tool results from role="tool" messages
+    let mut tool_results = Vec::new();
+    for msg in &messages_raw {
+        if msg.role == "tool" {
+            let output = msg
+                .content
+                .as_ref()
+                .map(|c| truncate_preview(&c.flatten(), 200));
+            tool_results.push(ToolResultParsed {
+                name: msg.name.clone(),
+                tool_use_id: msg.tool_call_id.clone(),
+                output_preview: output,
+            });
+        }
+    }
+
     let messages: Vec<LlmMessage> = messages_raw
         .iter()
         .map(|m| LlmMessage {
@@ -119,7 +153,84 @@ pub fn parse(body: &str) -> Option<LlmRequestParsed> {
         user_message,
         temperature: req.temperature,
         max_tokens,
+        tool_results,
     })
+}
+
+// ---- Response parsing ----
+
+/// Raw OpenAI Chat Completions response.
+#[derive(Deserialize)]
+struct OpenAiResponse {
+    model: Option<String>,
+    choices: Option<Vec<OpenAiChoice>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiChoice {
+    message: Option<OpenAiMessage>,
+}
+
+/// Try to parse a JSON body as an OpenAI Chat Completions API response.
+pub fn parse_response(body: &str) -> Option<LlmResponseParsed> {
+    let resp: OpenAiResponse = serde_json::from_str(body).ok()?;
+
+    let choices = resp.choices?;
+    if choices.is_empty() {
+        return None;
+    }
+
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for choice in &choices {
+        if let Some(ref msg) = choice.message {
+            // Extract text content
+            if let Some(ref content) = msg.content {
+                let text = content.flatten();
+                if !text.is_empty() {
+                    text_parts.push(text);
+                }
+            }
+
+            // Extract tool calls
+            if let Some(ref calls) = msg.tool_calls {
+                for call in calls {
+                    if let Some(ref func) = call.function {
+                        if let Some(ref name) = func.name {
+                            tool_calls.push(ToolCallParsed {
+                                name: name.clone(),
+                                input_json: func.arguments.clone(),
+                                tool_call_id: call.id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let text = if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join("\n"))
+    };
+
+    Some(LlmResponseParsed {
+        provider: "OpenAI".to_string(),
+        model: resp.model,
+        tool_calls,
+        text,
+    })
+}
+
+/// Truncate a string to `max_len` characters, appending "..." if truncated.
+fn truncate_preview(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len])
+    }
 }
 
 #[cfg(test)]

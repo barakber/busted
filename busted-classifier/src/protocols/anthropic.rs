@@ -14,7 +14,7 @@
 //! }
 //! ```
 
-use super::{LlmMessage, LlmRequestParsed};
+use super::{LlmMessage, LlmRequestParsed, LlmResponseParsed, ToolCallParsed, ToolResultParsed};
 use serde::Deserialize;
 
 /// Raw Anthropic request (serde model for parsing).
@@ -54,12 +54,14 @@ enum SystemContent {
 #[derive(Deserialize)]
 struct ContentBlock {
     #[serde(rename = "type")]
-    #[allow(dead_code)]
     block_type: Option<String>,
     text: Option<String>,
-    // tool_use blocks have name, id, input — we flatten them to text
+    // tool_use blocks
     name: Option<String>,
-    // tool_result blocks have content
+    id: Option<String>,
+    input: Option<serde_json::Value>,
+    // tool_result blocks
+    tool_use_id: Option<String>,
     content: Option<ToolResultContent>,
 }
 
@@ -125,6 +127,33 @@ pub fn parse(body: &str) -> Option<LlmRequestParsed> {
         return None;
     }
 
+    // Extract tool_result blocks from messages
+    let mut tool_results = Vec::new();
+    for msg in &messages_raw {
+        if let ContentField::Blocks(blocks) = &msg.content {
+            for block in blocks {
+                if block.block_type.as_deref() == Some("tool_result") {
+                    let output = block.content.as_ref().map(|c| {
+                        let text = match c {
+                            ToolResultContent::Text(t) => t.clone(),
+                            ToolResultContent::Blocks(inner) => inner
+                                .iter()
+                                .filter_map(|b| b.text.as_deref())
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        };
+                        truncate_preview(&text, 200)
+                    });
+                    tool_results.push(ToolResultParsed {
+                        name: block.name.clone(),
+                        tool_use_id: block.tool_use_id.clone(),
+                        output_preview: output,
+                    });
+                }
+            }
+        }
+    }
+
     let messages: Vec<LlmMessage> = messages_raw
         .iter()
         .map(|m| LlmMessage {
@@ -151,7 +180,77 @@ pub fn parse(body: &str) -> Option<LlmRequestParsed> {
         user_message,
         temperature: req.temperature,
         max_tokens: req.max_tokens,
+        tool_results,
     })
+}
+
+// ---- Response parsing ----
+
+/// Raw Anthropic response (serde model).
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    model: Option<String>,
+    content: Option<Vec<ContentBlock>>,
+    #[serde(rename = "type")]
+    response_type: Option<String>,
+}
+
+/// Try to parse a JSON body as an Anthropic Messages API response.
+pub fn parse_response(body: &str) -> Option<LlmResponseParsed> {
+    let resp: AnthropicResponse = serde_json::from_str(body).ok()?;
+
+    // Anthropic responses have type "message" and a content array
+    if resp.response_type.as_deref() != Some("message") && resp.content.is_none() {
+        return None;
+    }
+
+    let blocks = resp.content.unwrap_or_default();
+
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for block in &blocks {
+        match block.block_type.as_deref() {
+            Some("text") => {
+                if let Some(ref t) = block.text {
+                    text_parts.push(t.as_str());
+                }
+            }
+            Some("tool_use") => {
+                if let Some(ref name) = block.name {
+                    let input_json = block.input.as_ref().map(|v| v.to_string());
+                    tool_calls.push(ToolCallParsed {
+                        name: name.clone(),
+                        input_json,
+                        tool_call_id: block.id.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let text = if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join("\n"))
+    };
+
+    Some(LlmResponseParsed {
+        provider: "Anthropic".to_string(),
+        model: resp.model,
+        tool_calls,
+        text,
+    })
+}
+
+/// Truncate a string to `max_len` characters, appending "..." if truncated.
+fn truncate_preview(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len])
+    }
 }
 
 #[cfg(test)]

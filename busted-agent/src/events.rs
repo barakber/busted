@@ -1,158 +1,78 @@
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::{AgenticAction, BustedEvent, NetworkEventKind, ProcessInfo};
 use busted_types::NetworkEvent;
-#[cfg(feature = "tls")]
-use busted_types::TlsDataEvent;
 
+/// Create a BustedEvent from a raw network event.
 pub fn from_network_event(
     event: &NetworkEvent,
     provider: Option<&str>,
     policy: Option<&str>,
-) -> ProcessedEvent {
-    let event_type = match event.event_type {
-        1 => "TCP_CONNECT",
-        2 => "DATA_SENT",
-        3 => "DATA_RECEIVED",
-        4 => "CONNECTION_CLOSED",
-        5 => "DNS_QUERY",
-        _ => "UNKNOWN",
+) -> BustedEvent {
+    let kind = match event.event_type {
+        1 => NetworkEventKind::Connect,
+        2 => NetworkEventKind::DataSent,
+        3 => NetworkEventKind::DataReceived,
+        4 => NetworkEventKind::Close,
+        5 => NetworkEventKind::DnsQuery,
+        _ => NetworkEventKind::Connect,
     };
 
-    ProcessedEvent {
-        event_type: event_type.to_string(),
+    BustedEvent {
         timestamp: format_timestamp(event.timestamp_ns),
-        pid: event.pid,
-        uid: event.uid,
-        process_name: event.process_name().to_string(),
-        src_ip: event.source_ip().to_string(),
-        src_port: event.sport,
-        dst_ip: event.dest_ip().to_string(),
-        dst_port: event.dport,
-        bytes: event.bytes,
-        provider: provider.map(|s| s.to_string()),
+        process: ProcessInfo {
+            pid: event.pid,
+            uid: event.uid,
+            name: event.process_name().to_string(),
+            container_id: event.container_id_str().to_string(),
+            cgroup_id: event.cgroup_id,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: format!("{}:net", event.pid),
+        identity: None,
         policy: policy.map(|s| s.to_string()),
-        container_id: event.container_id_str().to_string(),
-        cgroup_id: event.cgroup_id,
-        request_rate: None,
-        session_bytes: None,
-        pod_name: None,
-        pod_namespace: None,
-        service_account: None,
-        ml_confidence: None,
-        ml_provider: None,
-        behavior_class: None,
-        cluster_id: None,
-        sni: None,
-        tls_protocol: None,
-        tls_details: None,
-        tls_payload: None,
-        content_class: None,
-        llm_provider: None,
-        llm_endpoint: None,
-        llm_model: None,
-        mcp_method: None,
-        mcp_category: None,
-        agent_sdk: None,
-        agent_fingerprint: None,
-        classifier_confidence: None,
-        pii_detected: None,
-        llm_user_message: None,
-        llm_system_prompt: None,
-        llm_messages_json: None,
-        llm_stream: None,
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: None,
-        agent_model_hash: None,
+        action: AgenticAction::Network {
+            kind,
+            src_ip: event.source_ip().to_string(),
+            src_port: event.sport,
+            dst_ip: event.dest_ip().to_string(),
+            dst_port: event.dport,
+            bytes: event.bytes,
+            sni: None,
+            provider: provider.map(|s| s.to_string()),
+        },
     }
 }
 
-/// Create a ProcessedEvent from a TLS data capture event with classification.
-#[cfg(feature = "tls")]
-pub fn from_tls_data_event(
-    event: &TlsDataEvent,
-    classification: &busted_classifier::Classification,
-) -> ProcessedEvent {
-    let event_type = match event.event_type {
-        7 => "TLS_DATA_WRITE",
-        8 => "TLS_DATA_READ",
-        _ => "UNKNOWN",
-    };
-
-    let payload = crate::tls::payload_to_string(event.payload_bytes());
-
-    let tls_protocol = classification.content_class_str().map(|s| s.to_string());
-    let tls_details = classification
-        .provider()
-        .map(|p| {
-            let mut detail = p.to_string();
-            if let Some(ep) = classification.endpoint() {
-                detail.push_str(&format!(" ({})", ep));
-            }
-            if let Some(m) = classification.model() {
-                detail.push_str(&format!(" model={}", m));
-            }
-            detail
-        })
-        .or_else(|| classification.mcp_method().map(|m| format!("MCP {}", m)));
-
-    ProcessedEvent {
-        event_type: event_type.to_string(),
-        timestamp: format_timestamp(event.timestamp_ns),
-        pid: event.pid,
-        uid: 0,
-        process_name: event.process_name().to_string(),
-        src_ip: String::new(),
-        src_port: 0,
-        dst_ip: String::new(),
-        dst_port: 0,
-        bytes: event.payload_len as u64,
-        provider: classification.provider().map(|s| s.to_string()),
+/// Create a BustedEvent shell for a TLS session action.
+/// The `action` field is set by the caller (from actions.rs).
+pub fn from_tls_session(
+    pid: u32,
+    process_name: &str,
+    session_id: &str,
+    _sni: Option<&str>,
+    action: AgenticAction,
+) -> BustedEvent {
+    BustedEvent {
+        timestamp: format_timestamp_now(),
+        process: ProcessInfo {
+            pid,
+            uid: 0,
+            name: process_name.to_string(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: session_id.to_string(),
+        identity: None,
         policy: None,
-        container_id: String::new(),
-        cgroup_id: 0,
-        request_rate: None,
-        session_bytes: None,
-        pod_name: None,
-        pod_namespace: None,
-        service_account: None,
-        ml_confidence: None,
-        ml_provider: None,
-        behavior_class: None,
-        cluster_id: None,
-        sni: None,
-        tls_protocol,
-        tls_details,
-        tls_payload: Some(payload),
-        content_class: classification.content_class_str().map(|s| s.to_string()),
-        llm_provider: classification.provider().map(|s| s.to_string()),
-        llm_endpoint: classification.endpoint().map(|s| s.to_string()),
-        llm_model: classification.model().map(|s| s.to_string()),
-        mcp_method: classification.mcp_method().map(|s| s.to_string()),
-        mcp_category: classification.mcp_category_str(),
-        agent_sdk: classification.sdk_string(),
-        agent_fingerprint: classification.signature_hash(),
-        classifier_confidence: Some(classification.confidence),
-        pii_detected: Some(classification.pii_flags.any()),
-        llm_user_message: None,
-        llm_system_prompt: None,
-        llm_messages_json: None,
-        llm_stream: None,
-        identity_id: None,
-        identity_instance: None,
-        identity_confidence: None,
-        identity_narrative: None,
-        identity_timeline: None,
-        identity_timeline_len: None,
-        agent_sdk_hash: classification.sdk_hash(),
-        agent_model_hash: classification.model_hash(),
+        action,
     }
 }
 
-fn format_timestamp(ns: u64) -> String {
+pub fn format_timestamp(ns: u64) -> String {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     // bpf_ktime_get_ns returns time since boot, not epoch.
@@ -171,6 +91,21 @@ fn format_timestamp(ns: u64) -> String {
     let minutes = (total_secs / 60) % 60;
     let seconds = total_secs % 60;
     let millis = subsec / 1_000_000;
+
+    format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+}
+
+pub fn format_timestamp_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let millis = now.subsec_millis();
+    let hours = (secs / 3600) % 24;
+    let minutes = (secs / 60) % 60;
+    let seconds = secs % 60;
 
     format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
 }

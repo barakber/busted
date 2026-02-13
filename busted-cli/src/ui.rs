@@ -6,5 +6,4 @@ pub fn run(args: UiArgs) -> anyhow::Result<()> {
     busted_ui::run_ui(busted_ui::UiConfig {
         demo_mode: args.demo,
     })
-    .map_err(|e| anyhow::anyhow!("UI error: {}", e))
 }

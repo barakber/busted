@@ -56,7 +56,7 @@ fn eval(dir: Option<&Path>, rule: Option<&str>, format: &str) -> Result<()> {
             continue;
         }
 
-        let event: busted_types::processed::ProcessedEvent =
+        let event: busted_types::agentic::BustedEvent =
             serde_json::from_str(&line).with_context(|| "Failed to parse NDJSON event")?;
 
         let decision = engine
@@ -68,8 +68,8 @@ fn eval(dir: Option<&Path>, rule: Option<&str>, format: &str) -> Result<()> {
                 let output = serde_json::json!({
                     "action": decision.action.as_str(),
                     "reasons": decision.reasons,
-                    "pid": event.pid,
-                    "process_name": event.process_name,
+                    "pid": event.process.pid,
+                    "process_name": event.process.name,
                 });
                 writeln!(out, "{}", output)?;
             }
@@ -82,7 +82,7 @@ fn eval(dir: Option<&Path>, rule: Option<&str>, format: &str) -> Result<()> {
                 writeln!(
                     out,
                     "{}: PID {} ({}){}",
-                    decision.action, event.pid, event.process_name, reasons_str
+                    decision.action, event.process.pid, event.process.name, reasons_str
                 )?;
             }
         }
@@ -122,7 +122,7 @@ fn test(dir: &Path, events_file: Option<&Path>) -> Result<()> {
 
         total += 1;
 
-        let event: busted_types::processed::ProcessedEvent = match serde_json::from_str(&line) {
+        let event: busted_types::agentic::BustedEvent = match serde_json::from_str(&line) {
             Ok(e) => e,
             Err(e) => {
                 eprintln!("  PARSE ERROR (line {}): {}", total, e);
@@ -146,8 +146,8 @@ fn test(dir: &Path, events_file: Option<&Path>) -> Result<()> {
                 println!(
                     "  [{}] PID {} ({}){}",
                     decision.action.as_str().to_uppercase(),
-                    event.pid,
-                    event.process_name,
+                    event.process.pid,
+                    event.process.name,
                     reasons_str,
                 );
             }

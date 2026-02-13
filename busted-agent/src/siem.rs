@@ -1,4 +1,4 @@
-use busted_types::processed::ProcessedEvent;
+use busted_types::agentic::BustedEvent;
 use log::{info, warn};
 use std::path::PathBuf;
 use tokio::sync::broadcast;
@@ -34,7 +34,7 @@ impl OutputSink {
 }
 
 /// Run a SIEM consumer that reads events from broadcast and writes to the given sink.
-pub async fn run_siem_consumer(rx: broadcast::Receiver<ProcessedEvent>, sink: OutputSink) {
+pub async fn run_siem_consumer(rx: broadcast::Receiver<BustedEvent>, sink: OutputSink) {
     match sink {
         OutputSink::Webhook { url } => run_webhook_consumer(rx, url).await,
         OutputSink::File { path } => run_file_consumer(rx, path).await,
@@ -42,7 +42,7 @@ pub async fn run_siem_consumer(rx: broadcast::Receiver<ProcessedEvent>, sink: Ou
     }
 }
 
-async fn run_webhook_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, url: String) {
+async fn run_webhook_consumer(mut rx: broadcast::Receiver<BustedEvent>, url: String) {
     info!("SIEM webhook consumer started -> {}", url);
     let client = reqwest::Client::new();
     let mut batch: Vec<String> = Vec::new();
@@ -96,7 +96,7 @@ async fn flush_webhook_batch(client: &reqwest::Client, url: &str, batch: &mut Ve
     }
 }
 
-async fn run_file_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, path: PathBuf) {
+async fn run_file_consumer(mut rx: broadcast::Receiver<BustedEvent>, path: PathBuf) {
     use tokio::io::AsyncWriteExt;
 
     info!("SIEM file consumer started -> {}", path.display());
@@ -135,7 +135,7 @@ async fn run_file_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, path: Pa
     }
 }
 
-async fn run_syslog_consumer(mut rx: broadcast::Receiver<ProcessedEvent>, host: String) {
+async fn run_syslog_consumer(mut rx: broadcast::Receiver<BustedEvent>, host: String) {
     info!("SIEM syslog consumer started -> {}:514", host);
     let addr = format!("{}:514", host);
     let socket = match tokio::net::UdpSocket::bind("0.0.0.0:0").await {

@@ -18,9 +18,13 @@ pub enum Command {
     /// OPA/Rego policy management
     Policy(PolicyArgs),
 
-    /// Launch the egui dashboard
+    /// Launch the web dashboard
     #[cfg(feature = "ui")]
     Ui(UiArgs),
+
+    /// Launch the terminal dashboard
+    #[cfg(feature = "tui")]
+    Tui(TuiArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -52,6 +56,10 @@ pub struct MonitorArgs {
     /// Prometheus metrics HTTP port
     #[arg(long, default_value_t = 9090)]
     pub metrics_port: u16,
+
+    /// Path for persistent identity store (enables cross-session identity tracking)
+    #[arg(long)]
+    pub identity_store_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -99,6 +107,14 @@ pub enum PolicyCommand {
 #[cfg(feature = "ui")]
 #[derive(Debug, Parser)]
 pub struct UiArgs {
+    /// Run in demo mode with synthetic events
+    #[arg(long)]
+    pub demo: bool,
+}
+
+#[cfg(feature = "tui")]
+#[derive(Debug, Parser)]
+pub struct TuiArgs {
     /// Run in demo mode with synthetic events
     #[arg(long)]
     pub demo: bool,
@@ -245,6 +261,24 @@ mod tests {
             assert!(args.demo);
         } else {
             panic!("Expected Ui command");
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cli_parses_tui() {
+        let cli = Cli::try_parse_from(["busted", "tui"]).unwrap();
+        assert!(matches!(cli.command, Command::Tui(_)));
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cli_parses_tui_demo() {
+        let cli = Cli::try_parse_from(["busted", "tui", "--demo"]).unwrap();
+        if let Command::Tui(args) = cli.command {
+            assert!(args.demo);
+        } else {
+            panic!("Expected Tui command");
         }
     }
 }
