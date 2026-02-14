@@ -1,4 +1,4 @@
-.PHONY: build build-release build-ebpf build-tui build-ui run run-release run-tui run-tui-demo run-ui run-ui-live clean check clippy fmt test docs install uninstall docker-build helm-lint helm-test helm-e2e help
+.PHONY: build build-release build-ebpf build-tui build-ui build-wasm run run-release run-tui run-tui-demo run-ui run-ui-live serve-wasm clean check clippy fmt test docs install uninstall docker-build helm-lint helm-test helm-e2e help
 
 ## Build targets ---------------------------------------------------------------
 
@@ -16,6 +16,9 @@ build-tui: ## Build the terminal dashboard
 
 build-ui: ## Build the GUI dashboard
 	cargo build -p busted-ui
+
+build-wasm: ## Build the WASM web dashboard (requires trunk)
+	cd busted-ui && trunk build --release
 
 ## Run targets -----------------------------------------------------------------
 
@@ -36,6 +39,9 @@ run-ui: build-ui ## Run the GUI dashboard (demo mode)
 
 run-ui-live: build-ui ## Run the GUI dashboard (live mode)
 	./target/debug/busted-ui
+
+serve-wasm: ## Build and serve WASM dashboard at http://localhost:8080 (requires trunk)
+	cd busted-ui && trunk serve --release
 
 ## Quality targets -------------------------------------------------------------
 

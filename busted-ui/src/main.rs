@@ -20,12 +20,33 @@ struct Args {
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
+    use wasm_bindgen::JsCast;
+
     // WASM entry point: always demo mode
     wasm_bindgen_futures::spawn_local(async {
         let web_options = eframe::WebOptions::default();
+
+        // eframe 0.33: start() expects an HtmlCanvasElement, not a string ID.
+        // Trunk injects a <canvas> with data-raw-handle; we create one ourselves.
+        let document = web_sys::window()
+            .expect("no window")
+            .document()
+            .expect("no document");
+        let canvas = document
+            .create_element("canvas")
+            .expect("failed to create canvas")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("not a canvas element");
+        canvas.set_id("busted_canvas");
+        document
+            .body()
+            .expect("no body")
+            .append_child(&canvas)
+            .expect("failed to append canvas");
+
         eframe::WebRunner::new()
             .start(
-                "the_canvas_id",
+                canvas,
                 web_options,
                 Box::new(|cc| {
                     egui_extras::install_image_loaders(&cc.egui_ctx);

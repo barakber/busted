@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "0.33", default-features = true, features = ["glow"] }
 egui_extras = { version = "0.33", features = ["syntect"] }
-busted-types = { version = "0.1.0", path = "../busted-types", features = ["user"] }
+busted-types = { version = "0.1.0", path = "../busted-types", default-features = false, features = ["user-no-aya"] }
 busted-theme = { version = "0.1.0", path = "../busted-theme" }
 log = { workspace = true }
 serde = { workspace = true }

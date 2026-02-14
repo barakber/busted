@@ -27,6 +27,8 @@
 //! - **Userspace side** (`user` feature) — adds `aya::Pod` impls, serde, IP-to-string
 //!   helpers, and the enriched [`agentic::BustedEvent`] that the rest of the system
 //!   consumes.
+//! - **WASM-compatible userspace** (`user-no-aya` feature) — like `user` but without
+//!   `aya::Pod` impls. Use for targets where aya doesn't compile (e.g. wasm32).
 //!
 //! # How data flows
 //!
@@ -61,7 +63,7 @@
 //! | [`AgentIdentity`] | Identity record for processes communicating with LLM providers |
 //! | [`agentic::BustedEvent`] | Enriched event for UI/SIEM consumption (requires `user` feature) |
 
-#![cfg_attr(not(feature = "user"), no_std)]
+#![cfg_attr(not(any(feature = "user", feature = "user-no-aya")), no_std)]
 
 /// Maximum length for process names.
 pub const TASK_COMM_LEN: usize = 16;
@@ -380,7 +382,7 @@ pub enum PolicyDecision {
     Audit = 2,
 }
 
-#[cfg(feature = "user")]
+#[cfg(feature = "aya")]
 mod pod_impls {
     use super::*;
     // SAFETY: All types are #[repr(C)], Copy, and contain only primitive/array fields.
@@ -395,7 +397,7 @@ mod pod_impls {
 ///
 /// Replaces the flat `ProcessedEvent` with a structured event type where each
 /// action variant carries only the fields relevant to that action.
-#[cfg(feature = "user")]
+#[cfg(any(feature = "user", feature = "user-no-aya"))]
 pub mod agentic {
     use serde::{Deserialize, Serialize};
 
@@ -958,7 +960,7 @@ mod tests {
 }
 
 /// Userspace helper methods for eBPF event types (requires `user` feature).
-#[cfg(feature = "user")]
+#[cfg(any(feature = "user", feature = "user-no-aya"))]
 pub mod userspace {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

@@ -7,4 +7,4 @@ authors.workspace = true
 description = "Shared color theme for busted TUI and GUI dashboards"
 
 [dependencies]
-busted-types = { path = "../busted-types", features = ["user"] }
+busted-types = { path = "../busted-types", default-features = false, features = ["user-no-aya"] }
