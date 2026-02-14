@@ -11,7 +11,12 @@ pub mod tabs;
 
 use eframe::egui;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use busted_types::agentic::BustedEvent;
 

@@ -1,7 +1,20 @@
 use busted_types::agentic::{
     AgenticAction, BustedEvent, IdentityInfo, NetworkEventKind, ProcessInfo,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(target_arch = "wasm32")]
+fn now_timestamp_wasm() -> String {
+    let millis = js_sys::Date::now() as u64;
+    let total_secs = millis / 1000;
+    let hours = (total_secs / 3600) % 24;
+    let minutes = (total_secs / 60) % 60;
+    let seconds = total_secs % 60;
+    let ms = millis % 1000;
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{ms:03}")
+}
 
 struct Scenario {
     process_name: &'static str,
@@ -197,6 +210,7 @@ const SCENARIOS: &[Scenario] = &[
     },
 ];
 
+#[cfg(not(target_arch = "wasm32"))]
 fn now_timestamp() -> String {
     let dur = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -207,6 +221,11 @@ fn now_timestamp() -> String {
     let seconds = total_secs % 60;
     let millis = dur.subsec_millis();
     format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_timestamp() -> String {
+    now_timestamp_wasm()
 }
 
 fn make_process(scenario: &Scenario) -> ProcessInfo {
