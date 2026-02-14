@@ -143,7 +143,7 @@ impl eframe::App for BustedApp {
             });
 
         egui::TopBottomPanel::top("stats")
-            .exact_height(44.0)
+            .exact_height(56.0)
             .frame(
                 egui::Frame::NONE
                     .fill(style::BG_COLOR)

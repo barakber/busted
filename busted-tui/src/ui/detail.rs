@@ -49,8 +49,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(para, area);
 }
 
+/// Width of the key column (characters).
+const KEY_W: usize = 14;
+
 fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
-    // Action section
+    // ── Action ───────────────────────────────────────────────────
     section_header("ACTION", lines);
     kv("Time", &ev.timestamp, lines);
     kv("Type", ev.action_type(), lines);
@@ -71,20 +74,12 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             ..
         } => {
             kv("Provider", provider, lines);
-            if let Some(m) = model {
-                kv("Model", m, lines);
-            }
-            if let Some(s) = sdk {
-                kv("SDK", s, lines);
-            }
-            if let Some(sni) = sni {
-                kv("SNI", sni, lines);
-            }
-            if let Some(ep) = endpoint {
-                kv("Endpoint", ep, lines);
-            }
+            opt_kv("Model", model.as_deref(), lines);
+            opt_kv("SDK", sdk.as_deref(), lines);
+            opt_kv("SNI", sni.as_deref(), lines);
+            opt_kv("Endpoint", endpoint.as_deref(), lines);
             kv("Bytes", &format_bytes(*bytes), lines);
-            kv("Stream", &stream.to_string(), lines);
+            kv("Stream", if *stream { "yes" } else { "no" }, lines);
             if let Some(c) = confidence {
                 kv("Confidence", &format!("{:.0}%", c * 100.0), lines);
             }
@@ -92,21 +87,10 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
                 kv_colored("PII", "DETECTED", s::PII_COLOR, lines);
             }
             if let Some(sp) = system_prompt {
-                lines.push(Line::from(""));
-                section_header("SYSTEM PROMPT", lines);
-                for l in sp.lines() {
-                    lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-                }
+                text_block("SYSTEM PROMPT", sp, lines);
             }
             if let Some(um) = user_message {
-                lines.push(Line::from(""));
-                section_header("USER MESSAGE", lines);
-                for l in um.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {l}"),
-                        s::normal_style(),
-                    )));
-                }
+                text_block("USER MESSAGE", um, lines);
             }
         }
         AgenticAction::Response {
@@ -117,12 +101,8 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             confidence,
         } => {
             kv("Provider", provider, lines);
-            if let Some(m) = model {
-                kv("Model", m, lines);
-            }
-            if let Some(sni) = sni {
-                kv("SNI", sni, lines);
-            }
+            opt_kv("Model", model.as_deref(), lines);
+            opt_kv("SNI", sni.as_deref(), lines);
             kv("Bytes", &format_bytes(*bytes), lines);
             if let Some(c) = confidence {
                 kv("Confidence", &format!("{:.0}%", c * 100.0), lines);
@@ -136,11 +116,7 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             kv("Provider", provider, lines);
             kv("Tool", tool_name, lines);
             if let Some(input) = input_json {
-                lines.push(Line::from(""));
-                section_header("TOOL INPUT", lines);
-                for l in input.lines() {
-                    lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-                }
+                text_block("TOOL INPUT", input, lines);
             }
         }
         AgenticAction::ToolResult {
@@ -149,11 +125,7 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
         } => {
             kv("Tool", tool_name, lines);
             if let Some(output) = output_preview {
-                lines.push(Line::from(""));
-                section_header("TOOL OUTPUT", lines);
-                for l in output.lines() {
-                    lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-                }
+                text_block("TOOL OUTPUT", output, lines);
             }
         }
         AgenticAction::McpRequest {
@@ -162,15 +134,9 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             params_preview,
         } => {
             kv("Method", method, lines);
-            if let Some(cat) = category {
-                kv("Category", cat, lines);
-            }
+            opt_kv("Category", category.as_deref(), lines);
             if let Some(params) = params_preview {
-                lines.push(Line::from(""));
-                section_header("MCP PARAMS", lines);
-                for l in params.lines() {
-                    lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-                }
+                text_block("MCP PARAMS", params, lines);
             }
         }
         AgenticAction::McpResponse {
@@ -179,11 +145,7 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
         } => {
             kv("Method", method, lines);
             if let Some(result) = result_preview {
-                lines.push(Line::from(""));
-                section_header("MCP RESULT", lines);
-                for l in result.lines() {
-                    lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-                }
+                text_block("MCP RESULT", result, lines);
             }
         }
         AgenticAction::PiiDetected {
@@ -208,18 +170,13 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             kv("Kind", &format!("{kind:?}"), lines);
             kv("Source", &format!("{src_ip}:{src_port}"), lines);
             kv("Dest", &format!("{dst_ip}:{dst_port}"), lines);
-            if let Some(sni) = sni {
-                kv("SNI", sni, lines);
-            }
-            if let Some(p) = provider {
-                kv("Provider", p, lines);
-            }
+            opt_kv("SNI", sni.as_deref(), lines);
+            opt_kv("Provider", provider.as_deref(), lines);
             kv("Bytes", &format_bytes(*bytes), lines);
         }
     }
 
-    // Process section
-    lines.push(Line::from(""));
+    // ── Process ──────────────────────────────────────────────────
     section_header("PROCESS", lines);
     kv("Name", &ev.process.name, lines);
     kv("PID", &ev.process.pid.to_string(), lines);
@@ -232,8 +189,7 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
         kv("Pod", &format!("{ns}/{pod}"), lines);
     }
 
-    // Policy section
-    lines.push(Line::from(""));
+    // ── Policy ───────────────────────────────────────────────────
     section_header("POLICY", lines);
     if let Some(ref pol) = ev.policy {
         let color = s::policy_color(Some(pol.as_str()));
@@ -245,50 +201,64 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
         kv_colored("PII", "DETECTED", s::PII_COLOR, lines);
     }
 
-    // Identity section
+    // ── Identity ─────────────────────────────────────────────────
     if let Some(ref id) = ev.identity {
-        lines.push(Line::from(""));
         section_header("IDENTITY", lines);
         kv(
             "Confidence",
             &format!("{:.0}%", id.confidence * 100.0),
             lines,
         );
-        if let Some(ref mt) = id.match_type {
-            kv("Match", mt, lines);
-        }
+        opt_kv("Match", id.match_type.as_deref(), lines);
         if let Some(nodes) = id.graph_node_count {
             let edges = id.graph_edge_count.unwrap_or(0);
             kv("Graph", &format!("{nodes}n / {edges}e"), lines);
         }
         if let Some(ref narrative) = id.narrative {
-            lines.push(Line::from(""));
-            section_header("NARRATIVE", lines);
-            for l in narrative.lines() {
-                lines.push(Line::from(Span::styled(format!("  {l}"), s::dim_style())));
-            }
+            text_block("NARRATIVE", narrative, lines);
         }
     }
 
-    // Session
-    lines.push(Line::from(""));
-    kv("Session", &ev.session_id, lines);
+    // ── Session ──────────────────────────────────────────────────
+    section_header("SESSION", lines);
+    kv("ID", &ev.session_id, lines);
 }
 
+// ── Formatting helpers ──────────────────────────────────────────────
+
 fn section_header(title: &str, lines: &mut Vec<Line<'static>>) {
-    lines.push(Line::from(Span::styled(
-        format!(" {title}"),
-        Style::default()
-            .fg(s::DIM_TEXT)
-            .add_modifier(Modifier::BOLD),
-    )));
+    lines.push(Line::from(""));
+    // "─── TITLE ─────────────────"
+    let label = format!(" {title} ");
+    let pad = 30usize.saturating_sub(label.len() + 3);
+    let rule = "─".repeat(pad);
+    lines.push(Line::from(vec![
+        Span::styled("───", Style::default().fg(s::BORDER_COLOR)),
+        Span::styled(
+            label,
+            Style::default()
+                .fg(s::ACCENT_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(rule, Style::default().fg(s::BORDER_COLOR)),
+    ]));
 }
 
 fn kv(key: &str, value: &str, lines: &mut Vec<Line<'static>>) {
     lines.push(Line::from(vec![
-        Span::styled(format!("  {key:>12}  "), s::dim_style()),
+        Span::styled(
+            format!("  {key:>width$}", width = KEY_W),
+            Style::default().fg(s::DIM_TEXT).add_modifier(Modifier::DIM),
+        ),
+        Span::styled(" │ ", Style::default().fg(s::BORDER_COLOR)),
         Span::styled(value.to_string(), s::normal_style()),
     ]));
+}
+
+fn opt_kv(key: &str, value: Option<&str>, lines: &mut Vec<Line<'static>>) {
+    if let Some(v) = value {
+        kv(key, v, lines);
+    }
 }
 
 fn kv_colored(
@@ -298,7 +268,40 @@ fn kv_colored(
     lines: &mut Vec<Line<'static>>,
 ) {
     lines.push(Line::from(vec![
-        Span::styled(format!("  {key:>12}  "), s::dim_style()),
-        Span::styled(value.to_string(), Style::default().fg(color)),
+        Span::styled(
+            format!("  {key:>width$}", width = KEY_W),
+            Style::default().fg(s::DIM_TEXT).add_modifier(Modifier::DIM),
+        ),
+        Span::styled(" │ ", Style::default().fg(s::BORDER_COLOR)),
+        Span::styled(
+            value.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+}
+
+fn text_block(label: &str, text: &str, lines: &mut Vec<Line<'static>>) {
+    // Sub-section rule
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:>width$}", "", width = KEY_W), Style::default()),
+        Span::styled(" ┌ ", Style::default().fg(s::BORDER_COLOR)),
+        Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(s::DIM_TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    for l in text.lines() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:>width$}", "", width = KEY_W), Style::default()),
+            Span::styled(" │ ", Style::default().fg(s::BORDER_COLOR)),
+            Span::styled(l.to_string(), s::dim_style()),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:>width$}", "", width = KEY_W), Style::default()),
+        Span::styled(" └─", Style::default().fg(s::BORDER_COLOR)),
     ]));
 }

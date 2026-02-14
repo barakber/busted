@@ -165,22 +165,19 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-fn paint_row_bg(ui: &mut egui::Ui, is_pii: bool, is_selected: bool) {
+/// Paint row background and return true if a left accent bar was drawn.
+fn paint_row_bg(ui: &mut egui::Ui, is_pii: bool, is_selected: bool) -> bool {
     let rect = ui.max_rect();
     if is_selected {
         ui.painter().rect_filled(rect, 0.0, style::SELECTED_BG);
-        // Left accent border for selected row
-        let accent_rect =
-            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom()));
-        ui.painter()
-            .rect_filled(accent_rect, 0.0, style::ACCENT_COLOR);
+        true
     } else if is_pii {
         ui.painter().rect_filled(rect, 0.0, style::PII_ROW_BG);
-        // Left red border for PII rows
-        let pii_rect =
-            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + 3.0, rect.bottom()));
-        ui.painter().rect_filled(pii_rect, 0.0, style::PII_COLOR);
-    } else if ui.rect_contains_pointer(rect) {
-        ui.painter().rect_filled(rect, 0.0, style::HOVER_BG);
+        true
+    } else {
+        if ui.rect_contains_pointer(rect) {
+            ui.painter().rect_filled(rect, 0.0, style::HOVER_BG);
+        }
+        false
     }
 }
