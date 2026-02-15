@@ -573,9 +573,7 @@ pub fn action_arrow(action: &AgenticAction) -> &'static str {
         AgenticAction::PiiDetected { .. } => "!!!",
         AgenticAction::Network { .. } => "---",
         AgenticAction::FileAccess { .. } => "[o]",
-        AgenticAction::FileData {
-            direction, ..
-        } => {
+        AgenticAction::FileData { direction, .. } => {
             if direction == "read" {
                 "<-["
             } else {

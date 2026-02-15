@@ -1233,10 +1233,7 @@ pub mod userspace {
         /// Get file path as string
         pub fn path_str(&self) -> &str {
             let len = (self.path_len as usize).min(crate::FILE_PATH_MAX);
-            let end = self.path[..len]
-                .iter()
-                .position(|&c| c == 0)
-                .unwrap_or(len);
+            let end = self.path[..len].iter().position(|&c| c == 0).unwrap_or(len);
             std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
         }
 
@@ -1265,10 +1262,7 @@ pub mod userspace {
         /// Get file path as string
         pub fn path_str(&self) -> &str {
             let len = (self.path_len as usize).min(crate::FILE_PATH_MAX);
-            let end = self.path[..len]
-                .iter()
-                .position(|&c| c == 0)
-                .unwrap_or(len);
+            let end = self.path[..len].iter().position(|&c| c == 0).unwrap_or(len);
             std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
         }
 

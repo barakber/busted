@@ -150,8 +150,7 @@ mod tests {
 
     #[test]
     fn cli_parses_monitor_with_file_monitor() {
-        let cli =
-            Cli::try_parse_from(["busted", "monitor", "--file-monitor"]).unwrap();
+        let cli = Cli::try_parse_from(["busted", "monitor", "--file-monitor"]).unwrap();
         if let Command::Monitor(args) = cli.command {
             assert!(args.file_monitor);
         } else {
