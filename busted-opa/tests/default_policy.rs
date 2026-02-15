@@ -135,6 +135,31 @@ fn mcp_event(method: &str) -> BustedEvent {
     }
 }
 
+/// FileAccess event.
+fn file_access_event(path: &str, mode: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "claude".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:file".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileAccess {
+            path: path.into(),
+            mode: mode.into(),
+            reason: None,
+        },
+    }
+}
+
 // =====================================================================
 // Default action: allow
 // =====================================================================
@@ -537,4 +562,161 @@ fn default_audits_response_with_provider() {
     let d = engine.evaluate(&event).unwrap();
     assert_eq!(d.action, Action::Audit);
     assert!(d.reasons.iter().any(|r| r.contains("Anthropic")));
+}
+
+// =====================================================================
+// FileAccess: audit normal file access
+// =====================================================================
+
+#[test]
+fn default_audits_file_access() {
+    let mut engine = default_engine();
+    let event = file_access_event("/home/user/.claude/settings.json", "read");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+    assert!(
+        d.reasons
+            .iter()
+            .any(|r| r.contains(".claude/settings.json")),
+        "reasons should mention the file path: {:?}",
+        d.reasons
+    );
+}
+
+// =====================================================================
+// FileAccess: deny sensitive files (.env, credentials, secrets)
+// =====================================================================
+
+#[test]
+fn default_denies_env_file_access() {
+    let mut engine = default_engine();
+    let event = file_access_event("/home/user/project/.env", "read");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(
+        d.reasons.iter().any(|r| r.contains("Sensitive")),
+        "reasons should mention sensitive: {:?}",
+        d.reasons
+    );
+}
+
+#[test]
+fn default_denies_credentials_file_access() {
+    let mut engine = default_engine();
+    let event = file_access_event("/home/user/.config/credentials.json", "read");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("Sensitive")));
+}
+
+#[test]
+fn default_denies_secrets_file_access() {
+    let mut engine = default_engine();
+    let event = file_access_event("/etc/secrets/api-key", "read");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("Sensitive")));
+}
+
+#[test]
+fn default_audits_non_sensitive_file_access() {
+    let mut engine = default_engine();
+    let event = file_access_event("/home/user/project/CLAUDE.md", "read");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+}
+
+#[test]
+fn default_file_access_reason_includes_mode() {
+    let mut engine = default_engine();
+    let event = file_access_event("/home/user/.claude/config.json", "write");
+    let d = engine.evaluate(&event).unwrap();
+    assert!(
+        d.reasons.iter().any(|r| r.contains("write")),
+        "reasons should include access mode: {:?}",
+        d.reasons
+    );
+}
+
+// =====================================================================
+// FileData: audit read events
+// =====================================================================
+
+fn file_data_event(path: &str, direction: &str, content: &str) -> BustedEvent {
+    BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "claude".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:file".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileData {
+            path: path.into(),
+            direction: direction.into(),
+            content: content.into(),
+            bytes: content.len() as u64,
+            truncated: None,
+        },
+    }
+}
+
+#[test]
+fn default_audits_file_data_read() {
+    let mut engine = default_engine();
+    let event = file_data_event(
+        "/home/user/.claude/settings.json",
+        "read",
+        r#"{"theme":"dark"}"#,
+    );
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
+    assert!(
+        d.reasons
+            .iter()
+            .any(|r| r.contains(".claude/settings.json")),
+        "reasons should mention file path: {:?}",
+        d.reasons
+    );
+}
+
+#[test]
+fn default_denies_file_data_write_to_env() {
+    let mut engine = default_engine();
+    let event = file_data_event("/home/user/project/.env", "write", "SECRET_KEY=abc123");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(
+        d.reasons.iter().any(|r| r.contains("Sensitive")),
+        "reasons should mention sensitive: {:?}",
+        d.reasons
+    );
+}
+
+#[test]
+fn default_denies_file_data_write_to_credentials() {
+    let mut engine = default_engine();
+    let event = file_data_event(
+        "/home/user/.config/credentials.json",
+        "write",
+        r#"{"token":"xyz"}"#,
+    );
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+}
+
+#[test]
+fn default_audits_file_data_read_from_sensitive() {
+    let mut engine = default_engine();
+    // Reading .env is OK (only writes to sensitive files are denied)
+    let event = file_data_event("/home/user/project/.env", "read", "DB_HOST=localhost");
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Audit);
 }

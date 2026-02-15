@@ -201,7 +201,10 @@ impl App {
                         || ev.sdk().is_some_and(|s| s.to_lowercase().contains(&q))
                         || ev
                             .user_message()
-                            .is_some_and(|m| m.to_lowercase().contains(&q));
+                            .is_some_and(|m| m.to_lowercase().contains(&q))
+                        || ev
+                            .file_path()
+                            .is_some_and(|p| p.to_lowercase().contains(&q));
                     if !matches {
                         return false;
                     }
@@ -597,6 +600,16 @@ pub fn action_arrow(action: &AgenticAction) -> &'static str {
         AgenticAction::McpResponse { .. } => "<--",
         AgenticAction::PiiDetected { .. } => "!!!",
         AgenticAction::Network { .. } => "---",
+        AgenticAction::FileAccess { .. } => "[o]",
+        AgenticAction::FileData {
+            direction, ..
+        } => {
+            if direction == "read" {
+                "<-["
+            } else {
+                "]->"
+            }
+        }
     }
 }
 

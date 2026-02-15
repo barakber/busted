@@ -238,6 +238,96 @@ fn payload_bytes_u16_max_clamps() {
     assert_eq!(e.payload_bytes().len(), TLS_PAYLOAD_MAX);
 }
 
+// ---- FileAccessEvent helpers ----
+
+#[test]
+fn file_access_event_path_str_normal() {
+    let mut e = busted_types::FileAccessEvent::new();
+    let path = b"/home/user/.claude/settings.json\0";
+    e.path[..path.len()].copy_from_slice(path);
+    e.path_len = (path.len() - 1) as u16; // exclude null
+    assert_eq!(e.path_str(), "/home/user/.claude/settings.json");
+}
+
+#[test]
+fn file_access_event_path_str_empty() {
+    let e = busted_types::FileAccessEvent::new();
+    assert_eq!(e.path_str(), "");
+}
+
+#[test]
+fn file_access_event_process_name() {
+    let mut e = busted_types::FileAccessEvent::new();
+    let name = b"claude\0";
+    e.comm[..name.len()].copy_from_slice(name);
+    assert_eq!(e.process_name(), "claude");
+}
+
+#[test]
+fn file_access_event_mode_str() {
+    let mut e = busted_types::FileAccessEvent::new();
+    e.flags = 0;
+    assert_eq!(e.mode_str(), "read");
+    e.flags = 1;
+    assert_eq!(e.mode_str(), "write");
+    e.flags = 2;
+    assert_eq!(e.mode_str(), "readwrite");
+    e.flags = 0x42; // O_CREAT | O_RDWR — low 2 bits = 2
+    assert_eq!(e.mode_str(), "readwrite");
+}
+
+// ---- FileDataEvent helpers ----
+
+#[test]
+fn file_data_event_path_str_normal() {
+    let mut e = busted_types::FileDataEvent::new();
+    let path = b"/home/user/.claude/settings.json\0";
+    e.path[..path.len()].copy_from_slice(path);
+    e.path_len = (path.len() - 1) as u16;
+    assert_eq!(e.path_str(), "/home/user/.claude/settings.json");
+}
+
+#[test]
+fn file_data_event_path_str_empty() {
+    let e = busted_types::FileDataEvent::new();
+    assert_eq!(e.path_str(), "");
+}
+
+#[test]
+fn file_data_event_process_name() {
+    let mut e = busted_types::FileDataEvent::new();
+    let name = b"claude\0";
+    e.comm[..name.len()].copy_from_slice(name);
+    assert_eq!(e.process_name(), "claude");
+}
+
+#[test]
+fn file_data_event_direction_str() {
+    let mut e = busted_types::FileDataEvent::new();
+    e.direction = 0;
+    assert_eq!(e.direction_str(), "write");
+    e.direction = 1;
+    assert_eq!(e.direction_str(), "read");
+    e.direction = 99;
+    assert_eq!(e.direction_str(), "unknown");
+}
+
+#[test]
+fn file_data_event_payload_bytes() {
+    let mut e = busted_types::FileDataEvent::new();
+    e.payload[0] = b'{';
+    e.payload[1] = b'}';
+    e.payload_len = 2;
+    assert_eq!(e.payload_bytes(), b"{}");
+}
+
+#[test]
+fn file_data_event_payload_bytes_overflow_clamps() {
+    let mut e = busted_types::FileDataEvent::new();
+    e.payload_len = u16::MAX;
+    assert_eq!(e.payload_bytes().len(), busted_types::FILE_DATA_MAX);
+}
+
 // ---- BustedEvent serde ----
 
 #[test]
@@ -385,4 +475,151 @@ fn busted_event_action_type_tag() {
     assert_eq!(de.provider(), Some("Anthropic"));
     assert!(de.identity.is_some());
     assert_eq!(de.identity.unwrap().confidence, 0.85);
+}
+
+#[test]
+fn busted_event_file_access_serde_round_trip() {
+    use busted_types::agentic::*;
+
+    let ev = BustedEvent {
+        timestamp: "12:34:56.789".into(),
+        process: ProcessInfo {
+            pid: 99,
+            uid: 1000,
+            name: "claude".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "99:file".into(),
+        identity: None,
+        policy: Some("audit".into()),
+        action: AgenticAction::FileAccess {
+            path: "/home/user/.claude/settings.json".into(),
+            mode: "read".into(),
+            reason: Some("path_pattern:.claude".into()),
+        },
+    };
+
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains(r#""type":"FileAccess"#));
+    assert!(json.contains(".claude/settings.json"));
+
+    let de: BustedEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(de.action_type(), "FileAccess");
+    assert_eq!(de.event_type(), "FILE_ACCESS");
+    assert_eq!(de.file_path(), Some("/home/user/.claude/settings.json"));
+    assert_eq!(de.bytes(), 0);
+    assert_eq!(de.content_class(), Some("FileAccess"));
+}
+
+#[test]
+fn busted_event_file_access_skip_none_reason() {
+    use busted_types::agentic::*;
+
+    let ev = BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "test".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:file".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileAccess {
+            path: "/tmp/test".into(),
+            mode: "write".into(),
+            reason: None,
+        },
+    };
+
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(!json.contains("reason"));
+}
+
+#[test]
+fn busted_event_file_data_serde_round_trip() {
+    use busted_types::agentic::*;
+
+    let ev = BustedEvent {
+        timestamp: "12:34:56.789".into(),
+        process: ProcessInfo {
+            pid: 99,
+            uid: 1000,
+            name: "claude".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "99:file".into(),
+        identity: None,
+        policy: Some("audit".into()),
+        action: AgenticAction::FileData {
+            path: "/home/user/.claude/settings.json".into(),
+            direction: "read".into(),
+            content: r#"{"theme":"dark"}"#.into(),
+            bytes: 16,
+            truncated: None,
+        },
+    };
+
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains(r#""type":"FileData"#));
+    assert!(json.contains("settings.json"));
+    assert!(!json.contains("truncated")); // None → skipped
+
+    let de: BustedEvent = serde_json::from_str(&json).unwrap();
+    assert_eq!(de.action_type(), "FileData");
+    assert_eq!(de.event_type(), "FILE_DATA");
+    assert_eq!(de.file_path(), Some("/home/user/.claude/settings.json"));
+    assert_eq!(de.bytes(), 16);
+    assert_eq!(de.content_class(), Some("FileData"));
+}
+
+#[test]
+fn busted_event_file_data_truncated_flag() {
+    use busted_types::agentic::*;
+
+    let ev = BustedEvent {
+        timestamp: "00:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1,
+            uid: 0,
+            name: "test".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1:file".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileData {
+            path: "/tmp/big.log".into(),
+            direction: "read".into(),
+            content: "partial data...".into(),
+            bytes: 4096,
+            truncated: Some(true),
+        },
+    };
+
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains("truncated"));
+
+    let de: BustedEvent = serde_json::from_str(&json).unwrap();
+    match &de.action {
+        AgenticAction::FileData { truncated, .. } => assert_eq!(*truncated, Some(true)),
+        _ => panic!("expected FileData"),
+    }
 }

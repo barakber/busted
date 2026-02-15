@@ -64,7 +64,18 @@ fn event_row(ev: &BustedEvent) -> Row<'static> {
     };
 
     let provider = ev.provider().unwrap_or("-").to_string();
-    let dest = ev.sni().unwrap_or("-").to_string();
+    let dest = ev
+        .file_path()
+        .map(|p| {
+            // Show last ~30 chars of path to fit column
+            if p.len() > 30 {
+                format!("...{}", &p[p.len() - 27..])
+            } else {
+                p.to_string()
+            }
+        })
+        .or_else(|| ev.sni().map(|s| s.to_string()))
+        .unwrap_or_else(|| "-".to_string());
     let bytes = ev.bytes();
     let bytes_str = if bytes > 0 {
         format_bytes(bytes)

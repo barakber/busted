@@ -174,6 +174,26 @@ fn build_detail_lines(ev: &BustedEvent, lines: &mut Vec<Line<'static>>) {
             opt_kv("Provider", provider.as_deref(), lines);
             kv("Bytes", &format_bytes(*bytes), lines);
         }
+        AgenticAction::FileAccess { path, mode, reason } => {
+            kv("Path", path, lines);
+            kv("Mode", mode, lines);
+            opt_kv("Reason", reason.as_deref(), lines);
+        }
+        AgenticAction::FileData {
+            path,
+            direction,
+            content,
+            bytes,
+            truncated,
+        } => {
+            kv("Path", path, lines);
+            kv("Direction", direction, lines);
+            kv("Bytes", &format_bytes(*bytes), lines);
+            if let Some(true) = truncated {
+                kv("Truncated", "yes", lines);
+            }
+            text_block("FILE CONTENT", content, lines);
+        }
     }
 
     // ── Process ──────────────────────────────────────────────────

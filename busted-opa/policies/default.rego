@@ -49,6 +49,56 @@ reasons[reason] {
     reason := concat("", ["MCP tool invocation detected: ", input.action.method])
 }
 
+# --- Deny: sensitive file access (e.g. .env, credentials, secrets) ---
+decision = "deny" {
+    _is_sensitive_file_access
+    not input.action.pii_detected
+    not _is_llm_traffic
+}
+
+# --- Audit: any file access event ---
+decision = "audit" {
+    input.action.type == "FileAccess"
+    not _is_sensitive_file_access
+}
+
+# --- Reasons ---
+reasons[reason] {
+    input.action.type == "FileAccess"
+    reason := concat("", ["File access: ", input.action.path, " (", input.action.mode, ")"])
+}
+
+reasons[reason] {
+    _is_sensitive_file_access
+    reason := concat("", ["Sensitive file access: ", input.action.path])
+}
+
+# --- Deny: file data write to sensitive files ---
+decision = "deny" {
+    _is_sensitive_file_write
+    not input.action.pii_detected
+    not _is_llm_traffic
+    not _is_sensitive_file_access
+}
+
+# --- Audit: file data read events ---
+decision = "audit" {
+    input.action.type == "FileData"
+    not _is_sensitive_file_write
+}
+
+# --- Reasons ---
+reasons[reason] {
+    input.action.type == "FileData"
+    bytes_str := sprintf("%d", [input.action.bytes])
+    reason := concat("", ["File data ", input.action.direction, ": ", input.action.path, " (", bytes_str, " bytes)"])
+}
+
+reasons[reason] {
+    _is_sensitive_file_write
+    reason := concat("", ["Sensitive file write: ", input.action.path])
+}
+
 # Helper: true when the event is related to LLM/AI traffic.
 _is_llm_traffic {
     input.action.provider != null
@@ -60,4 +110,39 @@ _is_llm_traffic {
 
 _is_llm_traffic {
     input.action.type == "McpRequest"
+}
+
+# Helper: true when a FileAccess event targets a sensitive file.
+_is_sensitive_file_access {
+    input.action.type == "FileAccess"
+    contains(input.action.path, ".env")
+}
+
+_is_sensitive_file_access {
+    input.action.type == "FileAccess"
+    contains(input.action.path, "credentials")
+}
+
+_is_sensitive_file_access {
+    input.action.type == "FileAccess"
+    contains(input.action.path, "secrets")
+}
+
+# Helper: true when a FileData event writes to a sensitive file.
+_is_sensitive_file_write {
+    input.action.type == "FileData"
+    input.action.direction == "write"
+    contains(input.action.path, ".env")
+}
+
+_is_sensitive_file_write {
+    input.action.type == "FileData"
+    input.action.direction == "write"
+    contains(input.action.path, "credentials")
+}
+
+_is_sensitive_file_write {
+    input.action.type == "FileData"
+    input.action.direction == "write"
+    contains(input.action.path, "secrets")
 }

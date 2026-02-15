@@ -38,6 +38,9 @@ spec:
             {{- if .Values.agent.enforce }}
             - "--enforce"
             {{- end }}
+            {{- if .Values.agent.fileMonitor }}
+            - "--file-monitor"
+            {{- end }}
             {{- if ne .Values.agent.output "stdout" }}
             - "--output"
             - {{ .Values.agent.output | quote }}

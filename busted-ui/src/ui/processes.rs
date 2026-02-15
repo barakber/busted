@@ -11,12 +11,12 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
     TableBuilder::new(ui)
         .striped(false)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::remainder().at_least(100.0)) // Process
-        .column(Column::exact(60.0)) // PID
-        .column(Column::exact(60.0)) // Events
-        .column(Column::exact(80.0)) // Bytes
-        .column(Column::exact(45.0)) // PII
-        .column(Column::remainder().at_least(120.0)) // Providers
+        .column(Column::remainder().at_least(100.0).resizable(true)) // Process
+        .column(Column::initial(60.0).resizable(true)) // PID
+        .column(Column::initial(60.0).resizable(true)) // Events
+        .column(Column::initial(80.0).resizable(true)) // Bytes
+        .column(Column::initial(45.0).resizable(true)) // PII
+        .column(Column::remainder().at_least(120.0).resizable(true)) // Providers
         .min_scrolled_height(0.0)
         .header(row_height, |mut header| {
             let cols = ["PROCESS", "PID", "EVENTS", "BYTES", "PII", "PROVIDERS"];

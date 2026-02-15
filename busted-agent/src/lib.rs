@@ -31,6 +31,7 @@
 //!     policy_rule: None,
 //!     metrics_port: 9184,
 //!     identity_store_path: None,
+//!     file_monitor: false,
 //! };
 //! run_agent(config).await
 //! # }
@@ -39,6 +40,8 @@
 #[cfg(feature = "tls")]
 pub mod actions;
 pub mod events;
+#[cfg(feature = "file-monitor")]
+pub mod file_monitor;
 #[cfg(feature = "k8s")]
 pub mod k8s;
 #[cfg(feature = "prometheus")]
@@ -49,6 +52,8 @@ pub mod siem;
 pub mod tls;
 
 use anyhow::{Context, Result};
+#[cfg(feature = "file-monitor")]
+use aya::programs::TracePoint;
 #[cfg(feature = "tls")]
 use aya::programs::UProbe;
 use aya::{
@@ -64,6 +69,8 @@ use busted_identity as identity;
 use busted_ml as ml;
 use busted_types::agentic::{AgenticAction, BustedEvent};
 use busted_types::{AgentIdentity, NetworkEvent};
+#[cfg(feature = "file-monitor")]
+use busted_types::{FileAccessEvent, FileDataEvent};
 #[cfg(feature = "tls")]
 use busted_types::{TlsConnKey, TlsDataEvent, TlsHandshakeEvent};
 use log::{debug, info, warn};
@@ -99,6 +106,7 @@ pub struct AgentConfig {
     pub policy_rule: Option<String>,
     pub metrics_port: u16,
     pub identity_store_path: Option<PathBuf>,
+    pub file_monitor: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +681,42 @@ async fn cli_output_consumer(
                                 );
                             }
                         }
+                        AgenticAction::FileAccess { path, mode, reason } => {
+                            let reason_str = reason
+                                .as_deref()
+                                .map(|r| format!(" [{}]", r))
+                                .unwrap_or_default();
+                            println!(
+                                "{} {} ({}) [o] {} ({}){}",
+                                ts, name, pid, path, mode, reason_str,
+                            );
+                        }
+                        AgenticAction::FileData {
+                            path,
+                            direction,
+                            content,
+                            bytes,
+                            truncated,
+                        } => {
+                            let arrow = if direction == "read" { "<-" } else { "->" };
+                            let trunc = if truncated == &Some(true) {
+                                " [truncated]"
+                            } else {
+                                ""
+                            };
+                            println!(
+                                "{} {} ({}) {} {} ({} B){}",
+                                ts, name, pid, arrow, path, bytes, trunc,
+                            );
+                            if verbose {
+                                let preview = if content.len() > 200 {
+                                    format!("{}...", &content[..200])
+                                } else {
+                                    content.clone()
+                                };
+                                println!("  content: {}", preview);
+                            }
+                        }
                     }
 
                     // Identity narrative (verbose only)
@@ -939,6 +983,56 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
         }
     }
 
+    // Attach file-access tracepoints (behind file-monitor feature flag)
+    #[cfg(feature = "file-monitor")]
+    if config.file_monitor {
+        let file_tp_names = [
+            (
+                "sys_enter_openat",
+                "syscalls",
+                "sys_enter_openat",
+                "file-access",
+            ),
+            (
+                "sys_exit_openat",
+                "syscalls",
+                "sys_exit_openat",
+                "file-data",
+            ),
+            (
+                "sys_enter_write",
+                "syscalls",
+                "sys_enter_write",
+                "file-data",
+            ),
+            ("sys_enter_read", "syscalls", "sys_enter_read", "file-data"),
+            ("sys_exit_read", "syscalls", "sys_exit_read", "file-data"),
+            (
+                "sys_enter_close",
+                "syscalls",
+                "sys_enter_close",
+                "file-data",
+            ),
+        ];
+        for (prog_name, category, tp_name, label) in file_tp_names {
+            match bpf.program_mut(prog_name) {
+                Some(prog) => {
+                    let tp: &mut TracePoint = prog.try_into()?;
+                    tp.load()
+                        .context(format!("Failed to load {prog_name} into kernel"))?;
+                    tp.attach(category, tp_name)
+                        .context(format!("Failed to attach {tp_name} tracepoint"))?;
+                    info!("Attached {label} tracepoint: {tp_name}");
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "File monitor: eBPF program '{prog_name}' not found"
+                    ));
+                }
+            }
+        }
+    }
+
     info!("All eBPF programs loaded successfully");
 
     // Take BPF maps for identity and policy
@@ -954,6 +1048,55 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
     #[cfg(feature = "tls")]
     let tls_verdict_map: AyaHashMap<_, TlsConnKey, u8> =
         AyaHashMap::try_from(bpf.take_map("TLS_CONN_VERDICT").unwrap())?;
+
+    // File-monitor: take INTERESTING_PIDS map and spawn periodic /proc scanner
+    #[cfg(feature = "file-monitor")]
+    let interesting_pids_map: Option<Arc<Mutex<AyaHashMap<MapData, u32, u8>>>> =
+        if config.file_monitor {
+            let map: AyaHashMap<_, u32, u8> =
+                AyaHashMap::try_from(bpf.take_map("INTERESTING_PIDS").unwrap())?;
+            let map = Arc::new(Mutex::new(map));
+
+            // Initial scan
+            {
+                let initial = tokio::task::spawn_blocking(file_monitor::scan_ai_processes)
+                    .await
+                    .unwrap_or_default();
+                if let Ok(mut m) = map.try_lock() {
+                    for pid in &initial {
+                        let _ = m.insert(*pid, 1u8, 0);
+                    }
+                }
+                if !initial.is_empty() {
+                    info!(
+                        "File monitor: found {} AI processes via /proc scan",
+                        initial.len()
+                    );
+                }
+            }
+
+            // Periodic re-scan
+            {
+                let map_clone = map.clone();
+                task::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        let pids = tokio::task::spawn_blocking(file_monitor::scan_ai_processes)
+                            .await
+                            .unwrap_or_default();
+                        if let Ok(mut m) = map_clone.try_lock() {
+                            for pid in &pids {
+                                let _ = m.insert(*pid, 1u8, 0);
+                            }
+                        }
+                    }
+                });
+            }
+
+            Some(map)
+        } else {
+            None
+        };
 
     // Kubernetes pod metadata cache (behind feature flag)
     #[cfg(feature = "k8s")]
@@ -1276,6 +1419,69 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                         sni_cache.insert(tls_event.pid, sni);
                     }
                     drop(item);
+                    continue;
+                }
+
+                // FileDataEvent: event_type 10 (large — uses PerCpuArray scratch)
+                #[cfg(feature = "file-monitor")]
+                if item_len >= std::mem::size_of::<FileDataEvent>()
+                    && !item.is_empty()
+                    && item[0] == 10
+                {
+                    let fd_event =
+                        unsafe { (item.as_ptr() as *const FileDataEvent).read_unaligned() };
+                    drop(item);
+
+                    let mut processed = events::from_file_data_event(&fd_event);
+                    #[cfg(feature = "opa")]
+                    if let Some(ref mut engine) = opa_engine {
+                        match engine.evaluate(&processed) {
+                            Ok(decision) => {
+                                processed.policy = Some(decision.action.as_str().to_string());
+                            }
+                            Err(e) => {
+                                debug!("OPA eval failed for FileData: {e}");
+                            }
+                        }
+                    }
+                    let _ = tx.send(processed);
+                    continue;
+                }
+
+                // FileAccessEvent: event_type 9, size 240
+                #[cfg(feature = "file-monitor")]
+                if item_len == std::mem::size_of::<FileAccessEvent>()
+                    && !item.is_empty()
+                    && item[0] == 9
+                {
+                    let fa_event =
+                        unsafe { (item.as_ptr() as *const FileAccessEvent).read_unaligned() };
+                    drop(item);
+
+                    let path = fa_event.path_str().to_string();
+                    let pid_tracked = if let Some(ref pids_map) = interesting_pids_map {
+                        pids_map
+                            .try_lock()
+                            .ok()
+                            .and_then(|m| m.get(&fa_event.pid, 0).ok())
+                            .is_some()
+                    } else {
+                        false
+                    };
+                    let reason = file_monitor::classify_reason(&path, pid_tracked);
+                    let mut processed = events::from_file_access_event(&fa_event, reason);
+                    #[cfg(feature = "opa")]
+                    if let Some(ref mut engine) = opa_engine {
+                        match engine.evaluate(&processed) {
+                            Ok(decision) => {
+                                processed.policy = Some(decision.action.as_str().to_string());
+                            }
+                            Err(e) => {
+                                debug!("OPA eval failed for FileAccess: {e}");
+                            }
+                        }
+                    }
+                    let _ = tx.send(processed);
                     continue;
                 }
 

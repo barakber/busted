@@ -186,6 +186,9 @@ impl Action {
                 }
                 _ => None,
             },
+
+            AgenticAction::FileAccess { .. } => None,
+            AgenticAction::FileData { .. } => None,
         }
     }
 

@@ -7,6 +7,7 @@ agent:
   format: json         # text | json | verbose
   verbose: false
   enforce: false
+  fileMonitor: false   # track file access + content reads/writes by AI agents
   output: stdout       # stdout | webhook:URL | file:PATH | syslog:HOST
   extraArgs: []
   extraEnvs: []        # additional env vars, e.g. [{name: RUST_LOG, value: debug}]

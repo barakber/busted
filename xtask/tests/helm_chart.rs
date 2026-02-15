@@ -70,10 +70,15 @@ fn assert_no_kind(docs: &[Value], kind: &str) {
 }
 
 /// Dig into a Value by a dot-separated path (e.g. "spec.template.spec.hostPID").
+/// Numeric segments (e.g. "0") index into YAML sequences.
 fn dig(val: &Value, path: &str) -> Option<Value> {
     let mut cur = val.clone();
     for seg in path.split('.') {
-        cur = cur.get(seg)?.clone();
+        if let Some(idx) = seg.parse::<usize>().ok() {
+            cur = cur.as_sequence()?.get(idx)?.clone();
+        } else {
+            cur = cur.get(seg)?.clone();
+        }
     }
     Some(cur)
 }
@@ -255,6 +260,11 @@ fn default_args_no_verbose_enforce_output() {
     assert!(!array_contains_str(
         ds,
         "spec.template.spec.containers.0.args",
+        "--file-monitor"
+    ));
+    assert!(!array_contains_str(
+        ds,
+        "spec.template.spec.containers.0.args",
         "--output"
     ));
 }
@@ -292,6 +302,18 @@ fn enforce_flag() {
         ds,
         "spec.template.spec.containers.0.args",
         "--enforce"
+    ));
+}
+
+#[test]
+fn file_monitor_flag() {
+    skip_no_helm!();
+    let docs = render(&["agent.fileMonitor=true"]);
+    let ds = find_by_kind(&docs, "DaemonSet").unwrap();
+    assert!(array_contains_str(
+        ds,
+        "spec.template.spec.containers.0.args",
+        "--file-monitor"
     ));
 }
 

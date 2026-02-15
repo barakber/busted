@@ -127,6 +127,14 @@ pub const SNI_MAX_LEN: usize = 128;
 /// The eBPF probe uses a PerCpuArray (not the stack) so this is safe.
 pub const TLS_PAYLOAD_MAX: usize = 16384;
 
+/// Maximum file path length captured by eBPF file-access probes.
+pub const FILE_PATH_MAX: usize = 192;
+
+/// Maximum payload bytes captured per file read/write.
+/// 4 KB — enough for config files (.claude/settings.json, CLAUDE.md, .env).
+/// The eBPF probe uses a PerCpuArray (not the stack) so this is safe.
+pub const FILE_DATA_MAX: usize = 4096;
+
 /// TLS handshake event captured by eBPF uprobe on SSL_ctrl
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -358,6 +366,117 @@ impl AgentIdentity {
     }
 }
 
+/// File access event captured by eBPF tracepoint on sys_enter_openat.
+/// 240 bytes — fits on the eBPF stack without a PerCpuArray scratch buffer.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileAccessEvent {
+    /// Event type (always 9 = FileAccess)
+    pub event_type: u8,
+    /// Open flags: O_RDONLY=0, O_WRONLY=1, O_RDWR=2
+    pub flags: u8,
+    /// Actual bytes written in `path` (excluding padding)
+    pub path_len: u16,
+    /// Process ID
+    pub pid: u32,
+    /// Thread ID
+    pub tid: u32,
+    /// User ID
+    pub uid: u32,
+    /// Timestamp (nanoseconds since boot)
+    pub timestamp_ns: u64,
+    /// Cgroup ID
+    pub cgroup_id: u64,
+    /// Process/command name
+    pub comm: [u8; TASK_COMM_LEN],
+    /// File path (null-padded)
+    pub path: [u8; FILE_PATH_MAX],
+}
+
+impl Default for FileAccessEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileAccessEvent {
+    pub const fn new() -> Self {
+        FileAccessEvent {
+            event_type: 9,
+            flags: 0,
+            path_len: 0,
+            pid: 0,
+            tid: 0,
+            uid: 0,
+            timestamp_ns: 0,
+            cgroup_id: 0,
+            comm: [0; TASK_COMM_LEN],
+            path: [0; FILE_PATH_MAX],
+        }
+    }
+}
+
+/// File data event captured by eBPF tracepoints on sys_enter_write / sys_exit_read.
+/// ~4344 bytes — requires PerCpuArray scratch buffer (too large for eBPF stack).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileDataEvent {
+    /// Event type (always 10 = FileData)
+    pub event_type: u8,
+    /// Direction: 0=write, 1=read
+    pub direction: u8,
+    /// Actual bytes captured (may be less than FILE_DATA_MAX)
+    pub payload_len: u16,
+    /// Actual bytes written in `path` (excluding padding)
+    pub path_len: u16,
+    pub _pad: u16,
+    /// Process ID
+    pub pid: u32,
+    /// Thread ID
+    pub tid: u32,
+    /// User ID
+    pub uid: u32,
+    /// File descriptor
+    pub fd: i32,
+    /// Timestamp (nanoseconds since boot)
+    pub timestamp_ns: u64,
+    /// Cgroup ID
+    pub cgroup_id: u64,
+    /// Process/command name
+    pub comm: [u8; TASK_COMM_LEN],
+    /// File path (copied from FD_PATHS map)
+    pub path: [u8; FILE_PATH_MAX],
+    /// Captured payload
+    pub payload: [u8; FILE_DATA_MAX],
+}
+
+impl Default for FileDataEvent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FileDataEvent {
+    pub const fn new() -> Self {
+        FileDataEvent {
+            event_type: 10,
+            direction: 0,
+            payload_len: 0,
+            path_len: 0,
+            _pad: 0,
+            pid: 0,
+            tid: 0,
+            uid: 0,
+            fd: 0,
+            timestamp_ns: 0,
+            cgroup_id: 0,
+            comm: [0; TASK_COMM_LEN],
+            path: [0; FILE_PATH_MAX],
+            payload: [0; FILE_DATA_MAX],
+        }
+    }
+}
+
 /// Classification result for LLM communication
 #[repr(u8)]
 #[derive(Clone, Copy, Debug)]
@@ -391,6 +510,8 @@ mod pod_impls {
     unsafe impl aya::Pod for TlsHandshakeEvent {}
     unsafe impl aya::Pod for TlsConnKey {}
     unsafe impl aya::Pod for TlsDataEvent {}
+    unsafe impl aya::Pod for FileAccessEvent {}
+    unsafe impl aya::Pod for FileDataEvent {}
 }
 
 /// Typed agentic action model for userspace consumption (requires `user` feature).
@@ -556,6 +677,26 @@ pub mod agentic {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             provider: Option<String>,
         },
+        /// File access event (openat syscall).
+        FileAccess {
+            path: String,
+            /// "read", "write", or "readwrite"
+            mode: String,
+            /// Why this event was flagged: "pid_tracked", "path_pattern:.claude", etc.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            reason: Option<String>,
+        },
+        /// File data capture (read/write content).
+        FileData {
+            path: String,
+            /// "read" or "write"
+            direction: String,
+            /// File content (UTF-8 lossy, up to 4KB)
+            content: String,
+            bytes: u64,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            truncated: Option<bool>,
+        },
     }
 
     /// Sub-types for network events.
@@ -689,6 +830,8 @@ pub mod agentic {
                 AgenticAction::McpResponse { .. } => "McpResponse",
                 AgenticAction::PiiDetected { .. } => "PiiDetected",
                 AgenticAction::Network { .. } => "Network",
+                AgenticAction::FileAccess { .. } => "FileAccess",
+                AgenticAction::FileData { .. } => "FileData",
             }
         }
 
@@ -698,6 +841,7 @@ pub mod agentic {
                 AgenticAction::Prompt { bytes, .. } => *bytes,
                 AgenticAction::Response { bytes, .. } => *bytes,
                 AgenticAction::Network { bytes, .. } => *bytes,
+                AgenticAction::FileData { bytes, .. } => *bytes,
                 _ => 0,
             }
         }
@@ -711,6 +855,8 @@ pub mod agentic {
                 AgenticAction::ToolResult { .. } => Some("LlmApi"),
                 AgenticAction::McpRequest { .. } => Some("Mcp"),
                 AgenticAction::McpResponse { .. } => Some("Mcp"),
+                AgenticAction::FileAccess { .. } => Some("FileAccess"),
+                AgenticAction::FileData { .. } => Some("FileData"),
                 _ => None,
             }
         }
@@ -732,6 +878,17 @@ pub mod agentic {
                     NetworkEventKind::DataReceived => "DATA_RECEIVED",
                     NetworkEventKind::DnsQuery => "DNS_QUERY",
                 },
+                AgenticAction::FileAccess { .. } => "FILE_ACCESS",
+                AgenticAction::FileData { .. } => "FILE_DATA",
+            }
+        }
+
+        /// File path, if this is a FileAccess or FileData event.
+        pub fn file_path(&self) -> Option<&str> {
+            match &self.action {
+                AgenticAction::FileAccess { path, .. } => Some(path),
+                AgenticAction::FileData { path, .. } => Some(path),
+                _ => None,
             }
         }
     }
@@ -901,6 +1058,37 @@ mod tests {
         assert_eq!(PolicyDecision::Audit as u8, 2);
     }
 
+    // -- FileAccessEvent --
+
+    #[test]
+    fn file_access_event_new_defaults() {
+        let e = FileAccessEvent::new();
+        assert_eq!(e.event_type, 9);
+        assert_eq!(e.flags, 0);
+        assert_eq!(e.path_len, 0);
+        assert_eq!(e.pid, 0);
+        assert_eq!(e.tid, 0);
+        assert_eq!(e.uid, 0);
+        assert_eq!(e.timestamp_ns, 0);
+        assert_eq!(e.cgroup_id, 0);
+        assert_eq!(e.comm, [0u8; TASK_COMM_LEN]);
+        assert_eq!(e.path, [0u8; FILE_PATH_MAX]);
+    }
+
+    #[test]
+    fn file_access_event_default_equals_new() {
+        let d = FileAccessEvent::default();
+        let n = FileAccessEvent::new();
+        assert_eq!(d.event_type, n.event_type);
+        assert_eq!(d.pid, n.pid);
+        assert_eq!(d.flags, n.flags);
+    }
+
+    #[test]
+    fn file_access_event_size() {
+        assert_eq!(core::mem::size_of::<FileAccessEvent>(), 240);
+    }
+
     // -- Constants --
 
     #[test]
@@ -910,6 +1098,42 @@ mod tests {
         assert_eq!(CGROUP_PATH_LEN, 128);
         assert_eq!(SNI_MAX_LEN, 128);
         assert_eq!(TLS_PAYLOAD_MAX, 16384);
+        assert_eq!(FILE_PATH_MAX, 192);
+        assert_eq!(FILE_DATA_MAX, 4096);
+    }
+
+    // -- FileDataEvent --
+
+    #[test]
+    fn file_data_event_new_defaults() {
+        let e = FileDataEvent::new();
+        assert_eq!(e.event_type, 10);
+        assert_eq!(e.direction, 0);
+        assert_eq!(e.payload_len, 0);
+        assert_eq!(e.path_len, 0);
+        assert_eq!(e.pid, 0);
+        assert_eq!(e.tid, 0);
+        assert_eq!(e.uid, 0);
+        assert_eq!(e.fd, 0);
+        assert_eq!(e.timestamp_ns, 0);
+        assert_eq!(e.cgroup_id, 0);
+        assert_eq!(e.comm, [0u8; TASK_COMM_LEN]);
+        assert_eq!(e.path, [0u8; FILE_PATH_MAX]);
+        assert_eq!(e.payload, [0u8; FILE_DATA_MAX]);
+    }
+
+    #[test]
+    fn file_data_event_default_equals_new() {
+        let d = FileDataEvent::default();
+        let n = FileDataEvent::new();
+        assert_eq!(d.event_type, n.event_type);
+        assert_eq!(d.pid, n.pid);
+        assert_eq!(d.direction, n.direction);
+    }
+
+    #[test]
+    fn file_data_event_size() {
+        assert_eq!(core::mem::size_of::<FileDataEvent>(), 4344);
     }
 
     // -- Field mutation (validates #[repr(C)] has no overlap) --
@@ -1002,6 +1226,75 @@ pub mod userspace {
                 .position(|&c| c == 0)
                 .unwrap_or(self.comm.len());
             std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
+        }
+    }
+
+    impl FileAccessEvent {
+        /// Get file path as string
+        pub fn path_str(&self) -> &str {
+            let len = (self.path_len as usize).min(crate::FILE_PATH_MAX);
+            let end = self.path[..len]
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(len);
+            std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
+        }
+
+        /// Get process name as string
+        pub fn process_name(&self) -> &str {
+            let len = self
+                .comm
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.comm.len());
+            std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
+        }
+
+        /// Get open mode as a human-readable string
+        pub fn mode_str(&self) -> &'static str {
+            match self.flags & 0x03 {
+                0 => "read",
+                1 => "write",
+                2 => "readwrite",
+                _ => "unknown",
+            }
+        }
+    }
+
+    impl FileDataEvent {
+        /// Get file path as string
+        pub fn path_str(&self) -> &str {
+            let len = (self.path_len as usize).min(crate::FILE_PATH_MAX);
+            let end = self.path[..len]
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(len);
+            std::str::from_utf8(&self.path[..end]).unwrap_or("<invalid>")
+        }
+
+        /// Get process name as string
+        pub fn process_name(&self) -> &str {
+            let len = self
+                .comm
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(self.comm.len());
+            std::str::from_utf8(&self.comm[..len]).unwrap_or("<invalid>")
+        }
+
+        /// Get the captured payload bytes (up to payload_len)
+        pub fn payload_bytes(&self) -> &[u8] {
+            let len = (self.payload_len as usize).min(crate::FILE_DATA_MAX);
+            &self.payload[..len]
+        }
+
+        /// Get direction as a human-readable string
+        pub fn direction_str(&self) -> &'static str {
+            match self.direction {
+                0 => "write",
+                1 => "read",
+                _ => "unknown",
+            }
         }
     }
 

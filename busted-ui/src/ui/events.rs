@@ -44,7 +44,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 process_name: ev.process.name.clone(),
                 pid: ev.process.pid.to_string(),
                 provider: ev.provider().unwrap_or("-").to_string(),
-                dest: ev.sni().unwrap_or("-").to_string(),
+                dest: ev
+                    .file_path()
+                    .map(|p| {
+                        if p.len() > 30 {
+                            format!("...{}", &p[p.len() - 27..])
+                        } else {
+                            p.to_string()
+                        }
+                    })
+                    .or_else(|| ev.sni().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "-".to_string()),
                 bytes_str: if bytes > 0 {
                     format_bytes(bytes)
                 } else {
@@ -64,14 +74,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
     let mut table = TableBuilder::new(ui)
         .striped(false)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(90.0)) // Time
-        .column(Column::exact(130.0)) // Action
-        .column(Column::remainder().at_least(80.0)) // Process
-        .column(Column::exact(50.0)) // PID
-        .column(Column::remainder().at_least(80.0)) // Provider
-        .column(Column::remainder().at_least(100.0)) // Destination
-        .column(Column::exact(60.0)) // Bytes
-        .column(Column::exact(55.0)) // Policy
+        .column(Column::initial(90.0).resizable(true)) // Time
+        .column(Column::initial(130.0).resizable(true)) // Action
+        .column(Column::remainder().at_least(80.0).resizable(true)) // Process
+        .column(Column::initial(50.0).resizable(true)) // PID
+        .column(Column::remainder().at_least(80.0).resizable(true)) // Provider
+        .column(Column::remainder().at_least(100.0).resizable(true)) // Destination
+        .column(Column::initial(60.0).resizable(true)) // Bytes
+        .column(Column::initial(55.0).resizable(true)) // Policy
         .min_scrolled_height(0.0);
 
     // Scroll the table viewport to keep the selected row visible

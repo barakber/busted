@@ -72,6 +72,71 @@ pub fn from_tls_session(
     }
 }
 
+/// Create a BustedEvent from a raw file-access event.
+#[cfg(feature = "file-monitor")]
+pub fn from_file_access_event(
+    event: &busted_types::FileAccessEvent,
+    reason: Option<String>,
+) -> BustedEvent {
+    BustedEvent {
+        timestamp: format_timestamp(event.timestamp_ns),
+        process: ProcessInfo {
+            pid: event.pid,
+            uid: event.uid,
+            name: event.process_name().to_string(),
+            container_id: String::new(),
+            cgroup_id: event.cgroup_id,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: format!("{}:file", event.pid),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileAccess {
+            path: event.path_str().to_string(),
+            mode: event.mode_str().to_string(),
+            reason,
+        },
+    }
+}
+
+/// Create a BustedEvent from a raw file-data event.
+#[cfg(feature = "file-monitor")]
+pub fn from_file_data_event(event: &busted_types::FileDataEvent) -> BustedEvent {
+    let payload = event.payload_bytes();
+    let content = String::from_utf8_lossy(payload).into_owned();
+    let truncated = if (event.payload_len as usize) >= busted_types::FILE_DATA_MAX {
+        Some(true)
+    } else {
+        None
+    };
+
+    BustedEvent {
+        timestamp: format_timestamp(event.timestamp_ns),
+        process: ProcessInfo {
+            pid: event.pid,
+            uid: event.uid,
+            name: event.process_name().to_string(),
+            container_id: String::new(),
+            cgroup_id: event.cgroup_id,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: format!("{}:file", event.pid),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileData {
+            path: event.path_str().to_string(),
+            direction: event.direction_str().to_string(),
+            content,
+            bytes: event.payload_len as u64,
+            truncated,
+        },
+    }
+}
+
 pub fn format_timestamp(ns: u64) -> String {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

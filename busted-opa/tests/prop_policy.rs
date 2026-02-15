@@ -90,6 +90,25 @@ fn process_info_strategy() -> impl Strategy<Value = ProcessInfo> {
         })
 }
 
+fn file_path_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("/home/user/.claude/settings.json".to_string()),
+        Just("/home/user/project/.env".to_string()),
+        Just("/home/user/.config/credentials.json".to_string()),
+        Just("/etc/secrets/api-key".to_string()),
+        Just("/home/user/project/CLAUDE.md".to_string()),
+        Just("/tmp/test.txt".to_string()),
+    ]
+}
+
+fn file_mode_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just("read".to_string()),
+        Just("write".to_string()),
+        Just("readwrite".to_string()),
+    ]
+}
+
 fn agentic_action_strategy() -> impl Strategy<Value = AgenticAction> {
     prop_oneof![
         // Network action (most common)
@@ -142,6 +161,26 @@ fn agentic_action_strategy() -> impl Strategy<Value = AgenticAction> {
             sni: None,
             confidence: None,
         }),
+        // FileAccess action
+        (file_path_strategy(), file_mode_strategy()).prop_map(|(path, mode)| {
+            AgenticAction::FileAccess {
+                path,
+                mode,
+                reason: None,
+            }
+        }),
+        // FileData action
+        (
+            file_path_strategy(),
+            prop_oneof![Just("read".to_string()), Just("write".to_string())],
+        )
+            .prop_map(|(path, direction)| AgenticAction::FileData {
+                path,
+                direction,
+                content: "test content".into(),
+                bytes: 12,
+                truncated: None,
+            }),
     ]
 }
 

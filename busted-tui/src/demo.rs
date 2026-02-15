@@ -357,6 +357,68 @@ fn make_mcp_response(scenario: &Scenario) -> BustedEvent {
     }
 }
 
+fn make_file_access(
+    process_name: &str,
+    pid: u32,
+    path: &str,
+    mode: &str,
+    reason: &str,
+) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: ProcessInfo {
+            pid,
+            uid: 1000,
+            name: process_name.to_string(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: format!("{pid}:file"),
+        identity: None,
+        policy: Some("audit".into()),
+        action: AgenticAction::FileAccess {
+            path: path.to_string(),
+            mode: mode.to_string(),
+            reason: Some(reason.to_string()),
+        },
+    }
+}
+
+fn make_file_data(
+    process_name: &str,
+    pid: u32,
+    path: &str,
+    direction: &str,
+    content: &str,
+) -> BustedEvent {
+    BustedEvent {
+        timestamp: now_timestamp(),
+        process: ProcessInfo {
+            pid,
+            uid: 1000,
+            name: process_name.to_string(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: format!("{pid}:file"),
+        identity: None,
+        policy: Some("audit".into()),
+        action: AgenticAction::FileData {
+            path: path.to_string(),
+            direction: direction.to_string(),
+            content: content.to_string(),
+            bytes: content.len() as u64,
+            truncated: None,
+        },
+    }
+}
+
 fn make_pii_detected(scenario: &Scenario) -> BustedEvent {
     BustedEvent {
         timestamp: now_timestamp(),
@@ -411,6 +473,38 @@ pub async fn start(tx: mpsc::UnboundedSender<AppEvent>) {
                 scenario,
                 response_bytes,
             ))));
+        }
+
+        // Occasional file-access events (every 3rd cycle)
+        if cycle % 3 == 0 {
+            let _ = tx.send(AppEvent::Busted(Box::new(make_file_access(
+                "claude",
+                9901,
+                "/home/user/.claude/settings.json",
+                "read",
+                "path_pattern:.claude",
+            ))));
+            sleep(Duration::from_millis(30)).await;
+
+            // File data: show content read from settings
+            let _ = tx.send(AppEvent::Busted(Box::new(make_file_data(
+                "claude",
+                9901,
+                "/home/user/.claude/settings.json",
+                "read",
+                r#"{"theme":"dark","model":"claude-sonnet-4-5-20250929","permissions":{"allow_network":true}}"#,
+            ))));
+            sleep(Duration::from_millis(30)).await;
+        }
+        if cycle % 5 == 0 {
+            let _ = tx.send(AppEvent::Busted(Box::new(make_file_access(
+                "cursor",
+                9902,
+                "/home/user/project/CLAUDE.md",
+                "read",
+                "path_pattern:CLAUDE.md",
+            ))));
+            sleep(Duration::from_millis(30)).await;
         }
 
         cycle += 1;

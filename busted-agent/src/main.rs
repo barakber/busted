@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
         #[cfg(not(feature = "prometheus"))]
         metrics_port: 9090,
         identity_store_path: None,
+        file_monitor: false,
     };
 
     busted_agent::run_agent(config).await

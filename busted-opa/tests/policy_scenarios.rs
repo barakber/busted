@@ -1320,6 +1320,85 @@ reasons[r] {
 }
 
 // =====================================================================
+// Scenario 25: FileAccess path-based restrictions
+// =====================================================================
+
+#[test]
+fn scenario_file_access_path_restrictions() {
+    let (_dir, mut engine) = engine_with_data(
+        r#"
+package busted
+
+default decision = "allow"
+
+decision = "deny" {
+    input.action.type == "FileAccess"
+    input.action.path == data.blocked_paths[_]
+}
+
+decision = "audit" {
+    input.action.type == "FileAccess"
+    not path_blocked
+}
+
+path_blocked {
+    input.action.path == data.blocked_paths[_]
+}
+
+reasons[r] {
+    input.action.type == "FileAccess"
+    path_blocked
+    r := concat("", ["Blocked file: ", input.action.path])
+}
+"#,
+        r#"{"blocked_paths": ["/etc/shadow", "/etc/passwd", "/root/.ssh/id_rsa"]}"#,
+    );
+
+    // Blocked path -> deny
+    let event = BustedEvent {
+        timestamp: "12:00:00.000".into(),
+        process: ProcessInfo {
+            pid: 1000,
+            uid: 1000,
+            name: "claude".into(),
+            container_id: String::new(),
+            cgroup_id: 0,
+            pod_name: None,
+            pod_namespace: None,
+            service_account: None,
+        },
+        session_id: "1000:file".into(),
+        identity: None,
+        policy: None,
+        action: AgenticAction::FileAccess {
+            path: "/etc/shadow".into(),
+            mode: "read".into(),
+            reason: None,
+        },
+    };
+    let d = engine.evaluate(&event).unwrap();
+    assert_eq!(d.action, Action::Deny);
+    assert!(d.reasons.iter().any(|r| r.contains("/etc/shadow")));
+
+    // Non-blocked path -> audit
+    let event2 = BustedEvent {
+        action: AgenticAction::FileAccess {
+            path: "/home/user/.claude/settings.json".into(),
+            mode: "read".into(),
+            reason: None,
+        },
+        ..event.clone()
+    };
+    assert_eq!(engine.evaluate(&event2).unwrap().action, Action::Audit);
+
+    // Non-FileAccess -> allow
+    assert_eq!(
+        engine.evaluate(&bare_event()).unwrap().action,
+        Action::Allow
+    );
+}
+
+// =====================================================================
 // Scenario 24: Identity-based restrictions
 // =====================================================================
 

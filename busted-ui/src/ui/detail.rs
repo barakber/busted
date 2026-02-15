@@ -132,6 +132,25 @@ fn build_detail(ui: &mut egui::Ui, ev: &BustedEvent) {
                         opt_kv(ui, "Provider", provider.as_deref());
                         kv(ui, "Bytes", &format_bytes(*bytes));
                     }
+                    AgenticAction::FileAccess { path, mode, reason } => {
+                        kv(ui, "Path", path);
+                        kv(ui, "Mode", mode);
+                        opt_kv(ui, "Reason", reason.as_deref());
+                    }
+                    AgenticAction::FileData {
+                        path,
+                        direction,
+                        bytes,
+                        truncated,
+                        ..
+                    } => {
+                        kv(ui, "Path", path);
+                        kv(ui, "Direction", direction);
+                        kv(ui, "Bytes", &format_bytes(*bytes));
+                        if let Some(true) = truncated {
+                            kv(ui, "Truncated", "yes");
+                        }
+                    }
                 }
             });
 
@@ -178,6 +197,10 @@ fn build_detail(ui: &mut egui::Ui, ev: &BustedEvent) {
             } => {
                 ui.add_space(4.0);
                 code_block(ui, "MCP RESULT", result);
+            }
+            AgenticAction::FileData { content, .. } => {
+                ui.add_space(4.0);
+                code_block(ui, "FILE CONTENT", content);
             }
             _ => {}
         }

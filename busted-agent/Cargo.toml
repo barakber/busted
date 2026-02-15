@@ -53,6 +53,7 @@ identity-graph = ["identity", "busted-identity?/graph"]
 identity-full = ["identity", "busted-identity?/full"]
 opa = ["dep:busted-opa"]
 tls = []
+file-monitor = []
 prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 
 [build-dependencies]

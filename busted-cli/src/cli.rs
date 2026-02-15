@@ -60,6 +60,10 @@ pub struct MonitorArgs {
     /// Path for persistent identity store (enables cross-session identity tracking)
     #[arg(long)]
     pub identity_store_path: Option<PathBuf>,
+
+    /// Enable file access monitoring (track which files AI agents open)
+    #[arg(long)]
+    pub file_monitor: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -138,6 +142,18 @@ mod tests {
             assert!(args.verbose);
             assert_eq!(args.format, "json");
             assert!(args.enforce);
+            assert!(!args.file_monitor);
+        } else {
+            panic!("Expected Monitor command");
+        }
+    }
+
+    #[test]
+    fn cli_parses_monitor_with_file_monitor() {
+        let cli =
+            Cli::try_parse_from(["busted", "monitor", "--file-monitor"]).unwrap();
+        if let Command::Monitor(args) = cli.command {
+            assert!(args.file_monitor);
         } else {
             panic!("Expected Monitor command");
         }

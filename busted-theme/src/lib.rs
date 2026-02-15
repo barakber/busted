@@ -30,6 +30,8 @@ pub const TOOL: Rgb = (188, 140, 255); // #bc8cff  soft purple
 pub const MCP: Rgb = (86, 212, 221); // #56d4dd  teal
 pub const PII: Rgb = (248, 81, 73); // #f85149  muted red
 pub const NETWORK: Rgb = (88, 166, 255); // #58a6ff  same as accent
+pub const FILE_ACCESS: Rgb = (200, 180, 120); // #c8b478  warm tan
+pub const FILE_DATA: Rgb = (180, 200, 140); // #b4c88c  soft sage green
 
 // ── Policy decision colors ──────────────────────────────────────────
 pub const ALLOW: Rgb = (63, 185, 80); // #3fb950
@@ -53,6 +55,8 @@ pub fn action_color(action: &AgenticAction) -> Rgb {
         AgenticAction::McpRequest { .. } | AgenticAction::McpResponse { .. } => MCP,
         AgenticAction::PiiDetected { .. } => PII,
         AgenticAction::Network { .. } => NETWORK,
+        AgenticAction::FileAccess { .. } => FILE_ACCESS,
+        AgenticAction::FileData { .. } => FILE_DATA,
     }
 }
 
